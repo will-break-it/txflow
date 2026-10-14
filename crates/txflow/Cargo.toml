@@ -1,0 +1,25 @@
+[package]
+name = "txflow"
+description = "Materialise txflow experiments offline into signed Cardano transactions, and the txflow CLI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "txflow"
+path = "src/main.rs"
+
+[dependencies]
+txflow-core = { path = "../txflow-core" }
+pallas-txbuilder = "=1.4.0"
+pallas-crypto = "=1.4.0"
+pallas-addresses = "=1.4.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+
+[dev-dependencies]
+pallas-traverse = "=1.4.0"

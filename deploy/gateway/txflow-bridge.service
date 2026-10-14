@@ -1,0 +1,22 @@
+# The txflow bridge on the gateway, installed by setup.sh: every relay of the
+# network, through the forwarded sockets in /run/txflow. Listens on
+# 127.0.0.1:8164 only; the tunnel is the way in.
+[Unit]
+Description=txflow relay bridge (gateway)
+After=network-online.target
+
+[Service]
+User=txflow
+EnvironmentFile=/etc/txflow/bridge.env
+ExecStart=@NODE@ /opt/txflow/scripts/relay-bridge.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/txflow
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

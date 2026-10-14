@@ -1,0 +1,54 @@
+{
+  "id": "musashi",
+  "name": "Musashi",
+  "protocol": "Ouroboros Leios",
+  "magic": 164,
+  "description": "The Leios test network. Three relays, one per continent, named after their AWS regions' cities (Frankfurt, N. Virginia, Tokyo); the earlier ids europe, americas and asia still work in specs. Nodes listen for node-to-node on 3010 and serve node-to-client only on their local socket, reached over SSH. Both are open to allow-listed addresses only. Hosts are a snapshot of 2026-10-13 (after the 13:03 UTC relaunch) and change when an instance is stopped.",
+  "relays": [
+    {
+      "id": "frankfurt",
+      "label": "Frankfurt",
+      "aliases": [
+        "europe"
+      ],
+      "host": "3.76.215.63",
+      "via": [
+        "n2c",
+        "n2n"
+      ],
+      "n2n_port": 3010
+    },
+    {
+      "id": "virginia",
+      "label": "N. Virginia",
+      "aliases": [
+        "americas"
+      ],
+      "host": "54.146.145.110",
+      "via": [
+        "n2c",
+        "n2n"
+      ],
+      "n2n_port": 3010
+    },
+    {
+      "id": "tokyo",
+      "label": "Tokyo",
+      "aliases": [
+        "asia"
+      ],
+      "host": "54.168.146.197",
+      "via": [
+        "n2c",
+        "n2n"
+      ],
+      "n2n_port": 3010
+    }
+  ],
+  "explorer": {
+    "name": "KleioScan",
+    "tx": "https://kleioscan.com/#/leios/tx/{tx}",
+    "address": "https://kleioscan.com/#/leios/address/{address}",
+    "block": "https://kleioscan.com/#/musashi/block/{block}"
+  }
+}

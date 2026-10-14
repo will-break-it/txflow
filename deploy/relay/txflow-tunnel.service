@@ -1,0 +1,23 @@
+# The Cloudflare Tunnel that carries the Worker's requests to the txflow
+# bridge, installed by install.sh. cloudflared only dials out to Cloudflare:
+# nothing listens on a public address. The tunnel token (TUNNEL_TOKEN) is in
+# /etc/txflow-bridge/tunnel.env, root only.
+[Unit]
+Description=txflow bridge tunnel (cloudflared)
+After=network-online.target txflow-bridge.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/txflow-bridge/tunnel.env
+ExecStart=@CLOUDFLARED@ tunnel --no-autoupdate run
+DynamicUser=yes
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

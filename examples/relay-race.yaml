@@ -1,0 +1,27 @@
+# Two competing chains raced from two continents, and a three-way double
+# spend with one copy sent to each relay of the Musashi network at once.
+# Check it with: txflow check examples/relay-race.yaml --network networks/musashi.json
+version: 0
+experiment: relay-race
+seed: 1
+params:
+  length: 3
+wallets:
+  alice: {}
+patterns:
+  - id: chains
+    use: conflicting_chains
+    with:
+      length: "{{ length }}"
+      conflict: per_step
+  - id: ds
+    use: conflict_set
+    with:
+      k: 3
+schedule:
+  releases:
+    - { select: { label: side-a }, target: frankfurt, at: 0ms }
+    - { select: { label: side-b }, target: tokyo, at: 0ms }
+    - { select: { names: [ds/x1] }, target: frankfurt }
+    - { select: { names: [ds/x2] }, target: virginia }
+    - { select: { names: [ds/x3] }, target: tokyo }

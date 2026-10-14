@@ -1,0 +1,22 @@
+# One SSH forward from the gateway to a relay's node socket, installed by
+# setup.sh: txflow-forward@frankfurt.service makes
+# /run/txflow/musashi-frankfurt.socket. The relay's host is in
+# /etc/txflow/relays/<relay>.env (HOST=), written from networks/<network>.json.
+[Unit]
+Description=txflow forward to relay %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=txflow
+EnvironmentFile=/etc/txflow/relays/%i.env
+ExecStart=/usr/bin/ssh -N -i /var/lib/txflow/.ssh/id_ed25519 \
+  -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o StreamLocalBindUnlink=yes -o StrictHostKeyChecking=accept-new \
+  -o UserKnownHostsFile=/var/lib/txflow/.ssh/known_hosts \
+  -L ${SOCKET_DIR}/${NETWORK}-%i.socket:${REMOTE_SOCKET} ${REMOTE_USER}@${HOST}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

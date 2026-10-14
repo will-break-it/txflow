@@ -1,0 +1,886 @@
+{
+  "$defs": {
+    "arg_text": {
+      "description": "A number, or `{{ expression }}` over `params` with + - * / and parentheses.",
+      "pattern": "^\\s*([0-9]+|\\{\\{[^{}]*\\}\\})\\s*$",
+      "type": "string"
+    },
+    "output": {
+      "additionalProperties": false,
+      "properties": {
+        "lovelace": {
+          "description": "An amount, `min` (the ledger minimum) or `change` (what is left).",
+          "oneOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "min",
+                "change"
+              ]
+            }
+          ]
+        },
+        "to": {
+          "description": "Owning wallet.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "lovelace"
+      ],
+      "type": "object"
+    },
+    "pattern": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/pattern_independent"
+        },
+        {
+          "$ref": "#/$defs/pattern_chain"
+        },
+        {
+          "$ref": "#/$defs/pattern_fan_out"
+        },
+        {
+          "$ref": "#/$defs/pattern_fan_in"
+        },
+        {
+          "$ref": "#/$defs/pattern_conflict_set"
+        },
+        {
+          "$ref": "#/$defs/pattern_branch_merge"
+        },
+        {
+          "$ref": "#/$defs/pattern_conflicting_chains"
+        }
+      ]
+    },
+    "pattern_branch_merge": {
+      "additionalProperties": false,
+      "description": "`root` branches into `width` children, which one `merge` transaction joins again. Every branch shares `root` as an ancestor, so `merge` depends on all of them: a `fan_out` closed by a merge. Emits: source s; txs root, c1..cW, merge (merge spends every c<i>.0).",
+      "properties": {
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "const": "branch_merge"
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "lovelace": {
+              "description": "Value of each branch; the last branch also gets the leftover. Default: 3 ADA per branch.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            "width": {
+              "default": 2,
+              "description": "Number of branches.",
+              "oneOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 2,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "branch_merge",
+      "type": "object"
+    },
+    "pattern_chain": {
+      "additionalProperties": false,
+      "description": "A chain t1 → t2 → … → tN where each transaction spends the previous one's change output. Tests how nodes handle dependent transactions. Emits: source s; txs t1..tN (t1 spends s, t<i> spends t<i-1>.0).",
+      "properties": {
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "const": "chain"
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "length": {
+              "default": 2,
+              "description": "Number of transactions in the chain.",
+              "oneOf": [
+                {
+                  "maximum": 100000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "lovelace": {
+              "description": "Value of the source that funds the chain. Default: 10 ADA, or enough for every step's fee when the chain is long.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "outs": {
+              "default": 1,
+              "description": "Outputs per transaction: one change output plus `outs - 1` minimum-value outputs.",
+              "oneOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "chain",
+      "type": "object"
+    },
+    "pattern_conflict_set": {
+      "additionalProperties": false,
+      "description": "`k` transactions that all spend the same source, so at most one of them can land: a k-way double spend. Emits: source s; txs x1..xK (every x<i> spends s).",
+      "properties": {
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "const": "conflict_set"
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "k": {
+              "default": 2,
+              "description": "Number of competing transactions.",
+              "oneOf": [
+                {
+                  "maximum": 100000,
+                  "minimum": 2,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "lovelace": {
+              "description": "Value of the contested source. Default: 10 ADA.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "conflict_set",
+      "type": "object"
+    },
+    "pattern_conflicting_chains": {
+      "additionalProperties": false,
+      "description": "Two chains a1 → … → aN and b1 → … → bN that compete. With `per_step` every pair aᵢ, bᵢ spends a shared input cᵢ, so each pair conflicts. With `root` only a1 and b1 conflict and the later transactions are orphaned by whichever side loses. Emits: sources wa, wb (fund each side), c1..cN (shared inputs; only c1 with `root`); txs a1..aN, b1..bN, labelled side-a and side-b.",
+      "properties": {
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "const": "conflicting_chains"
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "conflict": {
+              "default": "per_step",
+              "description": "`per_step`: every pair conflicts. `root`: only the first pair conflicts.",
+              "enum": [
+                "per_step",
+                "root"
+              ]
+            },
+            "conflict_lovelace": {
+              "description": "Value of each shared input cᵢ. Default: 2 ADA.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "length": {
+              "default": 3,
+              "description": "Length of each chain.",
+              "oneOf": [
+                {
+                  "maximum": 100000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "lovelace": {
+              "description": "Value of each side's funding source. Default: 10 ADA, or enough for every step's fee when `root` chains are long.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "conflicting_chains",
+      "type": "object"
+    },
+    "pattern_fan_in": {
+      "additionalProperties": false,
+      "description": "`width` independent leaf transactions whose change outputs are all spent by one `merge` transaction. Many parents, one child. Emits: sources s1..sW; txs l1..lW, merge (merge spends every l<i>.0).",
+      "properties": {
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "const": "fan_in"
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "lovelace": {
+              "description": "Value of each leaf's source. Default: 3 ADA per leaf.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            "width": {
+              "default": 2,
+              "description": "Number of leaf transactions merged.",
+              "oneOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 2,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "fan_in",
+      "type": "object"
+    },
+    "pattern_fan_out": {
+      "additionalProperties": false,
+      "description": "One transaction `root` with `width` outputs, each spent by its own child transaction. One parent, many children. Emits: source s; txs root, c1..cW (c<i> spends root.<i-1>).",
+      "properties": {
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "const": "fan_out"
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "lovelace": {
+              "description": "Value of each branch; the last branch also gets the leftover. Default: 3 ADA per branch.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            "width": {
+              "default": 2,
+              "description": "Number of outputs of `root`, and of children.",
+              "oneOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 2,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "fan_out",
+      "type": "object"
+    },
+    "pattern_independent": {
+      "additionalProperties": false,
+      "description": "`n` unrelated transactions, each funded by its own source. A baseline load with no dependencies or conflicts. Emits: sources s1..sN; txs t1..tN (t<i> spends s<i>).",
+      "properties": {
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "use": {
+          "const": "independent"
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "lovelace": {
+              "description": "Value of each source. Default: 10 ADA, or more when `outs` needs it.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "n": {
+              "default": 1,
+              "description": "Number of transactions.",
+              "oneOf": [
+                {
+                  "maximum": 100000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "outs": {
+              "default": 1,
+              "description": "Outputs per transaction: one change output plus `outs - 1` minimum-value outputs.",
+              "oneOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "independent",
+      "type": "object"
+    },
+    "schedule": {
+      "additionalProperties": false,
+      "description": "Where and when each transaction is sent. Without a schedule nothing is submitted; the graph can still be built and checked.",
+      "properties": {
+        "options": {
+          "additionalProperties": false,
+          "description": "How the run behaves once sending starts.",
+          "properties": {
+            "observe_for": {
+              "description": "How long to watch for inclusion after the last send.",
+              "pattern": "^(0|[0-9]+(ms|s))$",
+              "type": "string"
+            },
+            "skip_descendants_of_rejected": {
+              "description": "Stop sending a transaction's descendants once a relay rejects it (`n2c` only).",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "releases": {
+          "description": "Each release sends the transactions it selects to one target. A transaction selected by several releases is sent by each, which is how one transaction reaches several relays.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "default": "0ms",
+                "description": "Offset from the start of the run.",
+                "pattern": "^(0|[0-9]+(ms|s))$",
+                "type": "string"
+              },
+              "select": {
+                "description": "Which transactions to send: exactly one of `label`, `names` or `pattern`.",
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "Every transaction with this label, e.g. `side-a`.",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "These transactions by full name, e.g. `ds/x1`.",
+                    "properties": {
+                      "names": {
+                        "items": {
+                          "pattern": "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$",
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      }
+                    },
+                    "required": [
+                      "names"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "Every transaction a pattern instance emits, all copies included.",
+                    "properties": {
+                      "pattern": {
+                        "pattern": "^[a-z][a-z0-9_]*$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "pattern"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "spacing": {
+                "default": "0ms",
+                "description": "Gap between consecutive selected transactions, in dependency order.",
+                "pattern": "^(0|[0-9]+(ms|s))$",
+                "type": "string"
+              },
+              "target": {
+                "description": "A relay of the site's network, or a name in `targets`.",
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "via": {
+                "default": "n2c",
+                "description": "`n2c`: submitted as a local client, and the node says whether it accepted each transaction. `n2n`: offered as a peer would, with no answer beyond the peer asking for it.",
+                "enum": [
+                  "n2c",
+                  "n2n"
+                ]
+              }
+            },
+            "required": [
+              "select",
+              "target"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "targets": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "host": {
+                "description": "`host:port` for n2n.",
+                "type": "string"
+              },
+              "socket": {
+                "description": "Node socket path for n2c.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "Nodes outside the site's network, for local runs.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "releases"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "lovelace": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "owner": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "lovelace"
+      ],
+      "type": "object"
+    },
+    "tx": {
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "description": "Outputs spent: a source name, or `tx.N` for output N of a tx.",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "labels": {
+          "description": "Free tags a schedule can select on.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outputs": {
+          "description": "Exactly one output must be `change`.",
+          "items": {
+            "$ref": "#/$defs/output"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "reference_inputs": {
+          "description": "Outputs read but not spent.",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "inputs",
+        "outputs"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://txflow.fun/schema/v0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A declarative transaction-flow experiment: the UTxO graph to create, with no transaction ids. Write the shape with `patterns`; use `sources` and `txs` only for shapes no pattern covers.",
+  "properties": {
+    "expect": {
+      "description": "Expected outcomes. Carried, not yet interpreted."
+    },
+    "experiment": {
+      "description": "Short name of the experiment.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "description": "Named integers that arguments can use as `{{ name }}`, so one number scales the experiment.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "patterns": {
+      "description": "Pattern instances. Each emits named sources and txs under `<id>/`, or `<id>_<k>/` for each copy when `count` is written.",
+      "items": {
+        "$ref": "#/$defs/pattern"
+      },
+      "type": "array"
+    },
+    "schedule": {
+      "$ref": "#/$defs/schedule"
+    },
+    "seed": {
+      "description": "Any number. Rerunning with the same seed gives the same transactions.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "sources": {
+      "additionalProperties": {
+        "$ref": "#/$defs/source"
+      },
+      "description": "Hand-written funding outputs, by name.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "txs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/tx"
+      },
+      "description": "Hand-written transactions, by name. They may spend pattern outputs, e.g. `chains/a1.0`.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "version": {
+      "const": 0,
+      "description": "Format version. Always 0."
+    },
+    "wallets": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "description": "Symbolic owners of outputs. Usually one, e.g. `{ alice: {} }`.",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "version",
+    "experiment",
+    "seed",
+    "wallets"
+  ],
+  "title": "txflow experiment",
+  "type": "object"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "txflow-bridge",
+  "private": true,
+  "type": "module",
+  "description": "The relay bridge: the HTTP way to a relay's node, over cardano-cli.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "bridge": "node scripts/relay-bridge.mjs"
+  }
+}

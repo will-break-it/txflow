@@ -1,0 +1,23 @@
+# A double spend raced between two continents. a1 and b1 spend the same
+# output and leave Frankfurt and Tokyo at the same moment; three more
+# transactions build on each, half a second apart. At most one side can land:
+# the other side's first transaction is rejected or dropped, and everything
+# built on it is orphaned with it.
+# Check it with: txflow check examples/continent-race.yaml --network networks/musashi.json
+version: 0
+experiment: continent-race
+seed: 1
+params:
+  length: 4
+wallets:
+  alice: {}
+patterns:
+  - id: race
+    use: conflicting_chains
+    with:
+      length: "{{ length }}"
+      conflict: root
+schedule:
+  releases:
+    - { select: { label: side-a }, target: frankfurt, at: 0ms, spacing: 500ms }
+    - { select: { label: side-b }, target: tokyo, at: 0ms, spacing: 500ms }

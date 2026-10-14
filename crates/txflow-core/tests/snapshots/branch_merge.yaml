@@ -1,0 +1,45 @@
+version: 0
+wallets:
+- alice
+sources:
+  p/s:
+    owner: alice
+    lovelace: 9000000
+txs:
+  p/c1:
+    inputs:
+    - p/root.0
+    outputs:
+    - to: alice
+      lovelace: change
+  p/c2:
+    inputs:
+    - p/root.1
+    outputs:
+    - to: alice
+      lovelace: change
+  p/merge:
+    inputs:
+    - p/c1.0
+    - p/c2.0
+    outputs:
+    - to: alice
+      lovelace: change
+  p/root:
+    inputs:
+    - p/s
+    outputs:
+    - to: alice
+      lovelace: 3000000
+    - to: alice
+      lovelace: change
+derived:
+  topo_order:
+  - p/root
+  - p/c1
+  - p/c2
+  - p/merge
+  conflict_sets: {}
+  reference_contention: {}
+  orphan_on: {}
+  hash: blake2b256:51e428ee49cdad597512d84584495025ad371052134a5df9aa2b8a6047f3f702

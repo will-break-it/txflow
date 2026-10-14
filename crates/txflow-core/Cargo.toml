@@ -1,0 +1,14 @@
+[package]
+name = "txflow-core"
+description = "txflow experiment specs: patterns, expansion into a UTxO graph, and the graph rules."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+blake2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"

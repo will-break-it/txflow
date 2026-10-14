@@ -1,0 +1,16 @@
+[package]
+name = "txflow-wasm"
+description = "Browser bindings for txflow-core: check a spec and get the JSON Schema."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+txflow-core = { path = "../txflow-core" }
+serde_json = "1"
+serde_yaml = "0.9"
+wasm-bindgen = "=0.2.100"

@@ -1,0 +1,90 @@
+name: Release
+
+# Push a tag to publish a GitHub release:
+#   spec-v<N>  the spec format: its JSON Schema and pattern catalogue
+#   v<x.y.z>   the txflow CLI (must match the workspace version), with
+#              binaries for Linux and macOS and the current schema
+on:
+  push:
+    tags: ["spec-v*", "v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  spec:
+    if: startsWith(github.ref_name, 'spec-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the schema and catalogue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          dir="schema/v${TAG#spec-v}"
+          test -f "$dir/txflow.schema.json" || { echo "no $dir/txflow.schema.json"; exit 1; }
+          cat > notes.md <<NOTES
+          Version ${TAG#spec-v} of the txflow experiment spec, the \`version:\` field every spec starts with.
+
+          - \`txflow.schema.json\`: the JSON Schema (draft 2020-12), for editors and validators.
+          - \`catalogue.md\`: every pattern, its arguments, ranges and defaults.
+
+          Reference: https://txflow.fun/spec.html
+          NOTES
+          gh release create "$TAG" --title "Spec v${TAG#spec-v}" --notes-file notes.md \
+            "$dir/txflow.schema.json" "$dir/catalogue.md"
+
+  cli:
+    if: startsWith(github.ref_name, 'v')
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The tag matches the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "v$version" = "${{ github.ref_name }}" || { echo "tag ${{ github.ref_name }} but version $version"; exit 1; }
+      - run: cargo build --release --locked -p txflow
+      - name: Package
+        run: |
+          name="txflow-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir "$name"
+          cp target/release/txflow README.md LICENSE "$name/"
+          tar czf "$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: txflow-*.tar.gz
+
+  cli-release:
+    needs: cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Publish the CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          schema=$(ls -d schema/v* | sort -V | tail -1)
+          cat > notes.md <<NOTES
+          The \`txflow\` CLI: check, expand and materialise experiment specs offline.
+
+          \`\`\`sh
+          tar xzf txflow-$TAG-<target>.tar.gz
+          ./txflow-$TAG-<target>/txflow check my-experiment.yaml
+          \`\`\`
+
+          Reads spec version ${schema#schema/v}. The schema is attached; the reference is at https://txflow.fun/spec.html.
+          NOTES
+          gh release create "$TAG" --title "txflow $TAG" --notes-file notes.md \
+            txflow-*.tar.gz "$schema/txflow.schema.json"

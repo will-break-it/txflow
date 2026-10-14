@@ -1,0 +1,20 @@
+# The txflow relay bridge, installed by install.sh. Listens on 127.0.0.1:8164.
+[Unit]
+Description=txflow relay bridge
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/txflow-bridge.env
+ExecStart=@NODE@ /opt/txflow-bridge/scripts/relay-bridge.mjs
+DynamicUser=yes
+SupplementaryGroups=@GROUP@
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
