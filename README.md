@@ -3,12 +3,16 @@
 Describe a Cardano transaction flow, see its UTxO graph, and run it on the
 Leios Musashi test network.
 
-**[txflow.fun](https://txflow.fun)** · [Spec reference](https://txflow.fun/spec.html)
+<p align="center">
+  <strong><a href="https://txflow.fun">txflow.fun</a></strong> · <a href="https://txflow.fun/spec.html">Spec reference</a>
+</p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/editor-dark.png">
-  <img alt="The txflow editor: a spec drawn as a UTxO graph, with two competing chains and a three-way double spend sent to relays in Frankfurt, Virginia and Tokyo" src="docs/images/editor-light.png">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/editor-dark.png">
+    <img alt="The txflow editor: a spec drawn as a UTxO graph, funded from one transaction, with two competing chains and a three-way double spend sent to relays in Frankfurt, Virginia and Tokyo" src="docs/images/editor-light.png">
+  </picture>
+</p>
 
 An experiment is a short YAML spec: which transaction spends which output, where
 transactions deliberately conflict, and which relay gets each one when. It has
