@@ -2,5 +2,6 @@
   "max_txs": 500,
   "max_chain_length": 100,
   "max_outputs_per_tx": 50,
-  "max_funding_ada": 850
+  "max_funding_ada": 850,
+  "max_metadata_bytes": 1024
 }

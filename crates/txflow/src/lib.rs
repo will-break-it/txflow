@@ -7,8 +7,8 @@
 //! See `specs/` for the design.
 
 pub use txflow_core::{
-    catalogue, check, derive, error, expand, expr, ir, limits, network, patterns, schedule, schema,
-    spec,
+    catalogue, check, derive, error, expand, expr, ir, limits, metadata, network, patterns,
+    schedule, schema, spec,
 };
 
 pub mod context;

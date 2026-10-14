@@ -5,6 +5,62 @@
       "pattern": "^\\s*([0-9]+|\\{\\{[^{}]*\\}\\})\\s*$",
       "type": "string"
     },
+    "color": {
+      "description": "RGB, e.g. `ff0000`. Written as metadata label 1022, three bytes, as `tx-firehose --color` does, so `mempool-monitor` shows the txs in it.",
+      "pattern": "^#?[0-9a-fA-F]{6}$",
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": {
+        "$ref": "#/$defs/metadatum"
+      },
+      "description": "Transaction metadata by label (an integer), as in `cardano-cli --json-metadata-no-schema`: integers, text, lists and maps with text keys; text starting with `0x` is a byte string. Text and byte strings hold at most 64 bytes, so split longer text into a list. Labels 674 and 1022 belong to txflow; use `color` for the colour tag.",
+      "propertyNames": {
+        "not": {
+          "enum": [
+            "674",
+            "1022"
+          ]
+        },
+        "pattern": "^(0|[1-9][0-9]*)$"
+      },
+      "type": "object"
+    },
+    "metadatum": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "description": "A byte string, in hex.",
+          "pattern": "^0x([0-9a-fA-F]{2}){0,64}$",
+          "type": "string"
+        },
+        {
+          "description": "Text, at most 64 bytes.",
+          "maxLength": 64,
+          "not": {
+            "pattern": "^0x"
+          },
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/metadatum"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/metadatum"
+          },
+          "propertyNames": {
+            "maxLength": 64
+          },
+          "type": "object"
+        }
+      ]
+    },
     "output": {
       "additionalProperties": false,
       "properties": {
@@ -64,6 +120,10 @@
       "additionalProperties": false,
       "description": "`root` branches into `width` children, which one `merge` transaction joins again. Every branch shares `root` as an ancestor, so `merge` depends on all of them: a `fan_out` closed by a merge. Emits: source s; txs root, c1..cW, merge (merge spends every c<i>.0).",
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -81,6 +141,10 @@
           "description": "Instance name; prefixes everything it emits.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
         },
         "use": {
           "const": "branch_merge"
@@ -134,6 +198,10 @@
       "additionalProperties": false,
       "description": "A chain t1 → t2 → … → tN where each transaction spends the previous one's change output. Tests how nodes handle dependent transactions. Emits: source s; txs t1..tN (t1 spends s, t<i> spends t<i-1>.0).",
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -151,6 +219,10 @@
           "description": "Instance name; prefixes everything it emits.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
         },
         "use": {
           "const": "chain"
@@ -218,6 +290,10 @@
       "additionalProperties": false,
       "description": "`k` transactions that all spend the same source, so at most one of them can land: a k-way double spend. Emits: source s; txs x1..xK (every x<i> spends s).",
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -235,6 +311,10 @@
           "description": "Instance name; prefixes everything it emits.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
         },
         "use": {
           "const": "conflict_set"
@@ -288,6 +368,10 @@
       "additionalProperties": false,
       "description": "Two chains a1 → … → aN and b1 → … → bN that compete. With `per_step` every pair aᵢ, bᵢ spends a shared input cᵢ, so each pair conflicts. With `root` only a1 and b1 conflict and the later transactions are orphaned by whichever side loses. Emits: sources wa, wb (fund each side), c1..cN (shared inputs; only c1 with `root`); txs a1..aN, b1..bN, labelled side-a and side-b.",
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -305,6 +389,10 @@
           "description": "Instance name; prefixes everything it emits.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
         },
         "use": {
           "const": "conflicting_chains"
@@ -378,6 +466,10 @@
       "additionalProperties": false,
       "description": "`width` independent leaf transactions whose change outputs are all spent by one `merge` transaction. Many parents, one child. Emits: sources s1..sW; txs l1..lW, merge (merge spends every l<i>.0).",
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -395,6 +487,10 @@
           "description": "Instance name; prefixes everything it emits.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
         },
         "use": {
           "const": "fan_in"
@@ -448,6 +544,10 @@
       "additionalProperties": false,
       "description": "One transaction `root` with `width` outputs, each spent by its own child transaction. One parent, many children. Emits: source s; txs root, c1..cW (c<i> spends root.<i-1>).",
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -465,6 +565,10 @@
           "description": "Instance name; prefixes everything it emits.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
         },
         "use": {
           "const": "fan_out"
@@ -518,6 +622,10 @@
       "additionalProperties": false,
       "description": "`n` unrelated transactions, each funded by its own source. A baseline load with no dependencies or conflicts. Emits: sources s1..sN; txs t1..tN (t<i> spends s<i>).",
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -535,6 +643,10 @@
           "description": "Instance name; prefixes everything it emits.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
         },
         "use": {
           "const": "independent"
@@ -758,6 +870,10 @@
     "tx": {
       "additionalProperties": false,
       "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on this tx, over the spec's."
+        },
         "inputs": {
           "description": "Outputs spent: a source name, or `tx.N` for output N of a tx.",
           "items": {
@@ -774,6 +890,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on this tx, over the spec's."
         },
         "outputs": {
           "description": "Exactly one output must be `change`.",
@@ -805,6 +925,10 @@
   "additionalProperties": false,
   "description": "A declarative transaction-flow experiment: the UTxO graph to create, with no transaction ids. Write the shape with `patterns`; use `sources` and `txs` only for shapes no pattern covers.",
   "properties": {
+    "color": {
+      "$ref": "#/$defs/color",
+      "description": "Colour tag on every tx, unless a pattern or tx sets its own."
+    },
     "expect": {
       "description": "Expected outcomes. Carried, not yet interpreted."
     },
@@ -812,6 +936,10 @@
       "description": "Short name of the experiment.",
       "minLength": 1,
       "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata",
+      "description": "Transaction metadata on every tx, by label. A pattern's or a tx's own `metadata` replaces it label by label."
     },
     "params": {
       "additionalProperties": {

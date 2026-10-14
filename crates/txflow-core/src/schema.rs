@@ -8,6 +8,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::catalogue::{ArgKind, PatternInfo, COMMON_ARGS, PATTERNS};
+use crate::metadata::{COLOR_LABEL, MAX_STRING_BYTES, MESSAGE_LABEL};
 use crate::spec::VERSION;
 
 /// Spelling of wallet, source, tx, pattern and param names.
@@ -93,6 +94,15 @@ pub fn schema() -> Value {
                 "propertyNames": { "pattern": NAME },
                 "additionalProperties": { "$ref": "#/$defs/tx" }
             },
+            "metadata": {
+                "$ref": "#/$defs/metadata",
+                "description": "Transaction metadata on every tx, by label. A pattern's or a \
+                    tx's own `metadata` replaces it label by label."
+            },
+            "color": {
+                "$ref": "#/$defs/color",
+                "description": "Colour tag on every tx, unless a pattern or tx sets its own."
+            },
             "schedule": { "$ref": "#/$defs/schedule" },
             "expect": {
                 "description": "Expected outcomes. Carried, not yet interpreted."
@@ -164,8 +174,71 @@ fn defs() -> Value {
                     "type": "array",
                     "description": "Free tags a schedule can select on.",
                     "items": { "type": "string" }
+                },
+                "metadata": {
+                    "$ref": "#/$defs/metadata",
+                    "description": "Transaction metadata on this tx, over the spec's."
+                },
+                "color": {
+                    "$ref": "#/$defs/color",
+                    "description": "Colour tag on this tx, over the spec's."
                 }
             }
+        }),
+    );
+    defs.insert(
+        "metadata".to_string(),
+        json!({
+            "type": "object",
+            "description": format!(
+                "Transaction metadata by label (an integer), as in `cardano-cli \
+                 --json-metadata-no-schema`: integers, text, lists and maps with text keys; \
+                 text starting with `0x` is a byte string. Text and byte strings hold at most \
+                 {MAX_STRING_BYTES} bytes, so split longer text into a list. Labels \
+                 {MESSAGE_LABEL} and {COLOR_LABEL} belong to txflow; use `color` for the \
+                 colour tag."
+            ),
+            "propertyNames": {
+                "pattern": "^(0|[1-9][0-9]*)$",
+                "not": { "enum": [MESSAGE_LABEL.to_string(), COLOR_LABEL.to_string()] }
+            },
+            "additionalProperties": { "$ref": "#/$defs/metadatum" }
+        }),
+    );
+    defs.insert(
+        "metadatum".to_string(),
+        json!({
+            "anyOf": [
+                { "type": "integer" },
+                {
+                    "type": "string",
+                    "pattern": format!("^0x([0-9a-fA-F]{{2}}){{0,{MAX_STRING_BYTES}}}$"),
+                    "description": "A byte string, in hex."
+                },
+                {
+                    "type": "string",
+                    "maxLength": MAX_STRING_BYTES,
+                    "not": { "pattern": "^0x" },
+                    "description": format!("Text, at most {MAX_STRING_BYTES} bytes.")
+                },
+                { "type": "array", "items": { "$ref": "#/$defs/metadatum" } },
+                {
+                    "type": "object",
+                    "propertyNames": { "maxLength": MAX_STRING_BYTES },
+                    "additionalProperties": { "$ref": "#/$defs/metadatum" }
+                }
+            ]
+        }),
+    );
+    defs.insert(
+        "color".to_string(),
+        json!({
+            "type": "string",
+            "pattern": "^#?[0-9a-fA-F]{6}$",
+            "description": format!(
+                "RGB, e.g. `ff0000`. Written as metadata label {COLOR_LABEL}, three bytes, \
+                 as `tx-firehose --color` does, so `mempool-monitor` shows the txs in it."
+            )
         }),
     );
     defs.insert(
@@ -355,6 +428,15 @@ fn pattern_schema(pattern: &PatternInfo) -> Value {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": args
+            },
+            "metadata": {
+                "$ref": "#/$defs/metadata",
+                "description": "Transaction metadata on every tx this instance emits, over \
+                    the spec's."
+            },
+            "color": {
+                "$ref": "#/$defs/color",
+                "description": "Colour tag on every tx this instance emits, over the spec's."
             }
         }
     })

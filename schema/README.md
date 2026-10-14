@@ -24,6 +24,9 @@ code generates.
 - **Same version, regenerate:** adding a pattern, adding an optional argument, widening
   a range, improving descriptions. Every spec that was valid stays valid and means the
   same thing.
+  Publish it as a revision of the same version: tag `spec-v<N>.<r>` (for example
+  `spec-v0.1`), which releases the regenerated `schema/v<N>/` files. The `version:`
+  field stays `N`.
 - **New version:** removing or renaming a pattern or argument, narrowing a range,
   changing a default, or changing what an existing spec expands to. Bump `VERSION`,
   regenerate (the new file lands in `schema/v<N+1>/`) and keep `schema/v<N>/` as it is,

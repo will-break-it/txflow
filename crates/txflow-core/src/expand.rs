@@ -6,6 +6,7 @@ use crate::derive;
 use crate::error::{Error, Result};
 use crate::expr;
 use crate::ir::{Ir, Source, Tx};
+use crate::metadata::{self, Metadata};
 use crate::patterns::{self, Args, Flags, MAX_ELEMENTS};
 use crate::spec::{ExperimentSpec, VERSION};
 
@@ -28,6 +29,12 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
     for wallet in spec.wallets.keys() {
         check_name(wallet)?;
     }
+    metadata::validate(&spec.metadata)?;
+    let spec_color = spec
+        .color
+        .as_deref()
+        .map(metadata::parse_color)
+        .transpose()?;
     let mut ids = BTreeSet::new();
     let mut namespaces = BTreeSet::new();
     let mut total_nodes: u64 = 0;
@@ -62,6 +69,16 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                 instance.id
             )));
         }
+        metadata::validate(&instance.metadata).map_err(|e| in_pattern(&instance.id, e))?;
+        let tag = Tag {
+            metadata: metadata::merge(&spec.metadata, &instance.metadata),
+            color: match &instance.color {
+                Some(color) => {
+                    Some(metadata::parse_color(color).map_err(|e| in_pattern(&instance.id, e))?)
+                }
+                None => spec_color.clone(),
+            },
+        };
         let mut with = instance.with.clone();
         let flags = Flags {
             conflict: take_string(&mut with, "conflict")
@@ -138,6 +155,8 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                     .iter()
                     .map(|r| format!("{prefix}{r}"))
                     .collect();
+                tx.metadata = tag.metadata.clone();
+                tx.color = tag.color.clone();
                 insert_unique(&mut txs, format!("{prefix}{name}"), tx)?;
             }
         }
@@ -149,7 +168,28 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
     }
     for (name, tx) in &spec.txs {
         check_name(name)?;
-        insert_unique(&mut txs, name.clone(), tx.clone())?;
+        let in_tx = |e: Error| match e {
+            Error::Spec(message) => Error::Spec(format!("tx `{name}`: {message}")),
+            other => other,
+        };
+        metadata::validate(&tx.metadata).map_err(in_tx)?;
+        let mut tx = tx.clone();
+        tx.metadata = metadata::merge(&spec.metadata, &tx.metadata);
+        tx.color = match &tx.color {
+            Some(color) => Some(metadata::parse_color(color).map_err(in_tx)?),
+            None => spec_color.clone(),
+        };
+        insert_unique(&mut txs, name.clone(), tx)?;
+    }
+
+    for (name, tx) in &txs {
+        let size = metadata::encoded_size(&tx.metadata, tx.color.as_deref());
+        if size > metadata::MAX_BYTES {
+            return Err(Error::Spec(format!(
+                "tx `{name}` asks for {size} bytes of metadata; the most is {}",
+                metadata::MAX_BYTES
+            )));
+        }
     }
 
     // Canonical form: inputs and reference inputs are sets, so list them sorted.
@@ -167,6 +207,12 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
     };
     ir.derived = Some(derive::derive(&ir)?);
     Ok(ir)
+}
+
+/// Metadata and colour a pattern instance puts on every tx it emits.
+struct Tag {
+    metadata: Metadata,
+    color: Option<String>,
 }
 
 /// Name the pattern instance an error came from.

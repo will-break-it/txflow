@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::ir::{Source, Tx};
+use crate::metadata::Metadata;
 use crate::schedule::Schedule;
 
 /// Version of the spec format this crate reads. Adding a pattern or an
@@ -24,6 +25,13 @@ pub struct ExperimentSpec {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, i64>,
     pub wallets: BTreeMap<String, WalletSpec>,
+    /// Metadata on every tx. A pattern instance's or a tx's own metadata
+    /// replaces it label by label.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: Metadata,
+    /// Colour tag on every tx, unless a pattern instance or tx sets its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub patterns: Vec<PatternInstance>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -53,6 +61,12 @@ pub struct PatternInstance {
     pub count: Option<serde_yaml::Value>,
     #[serde(default)]
     pub with: BTreeMap<String, serde_yaml::Value>,
+    /// Metadata on every tx this instance emits, over the spec's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: Metadata,
+    /// Colour tag on every tx this instance emits, over the spec's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 impl ExperimentSpec {

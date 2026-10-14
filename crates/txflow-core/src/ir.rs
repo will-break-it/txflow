@@ -5,7 +5,7 @@
 //! orphans and reference contention are derived from those lists by
 //! [`crate::derive`]; they are never declared.
 //!
-//! This MVP supports plain payments: no scripts, tokens, datums or mint.
+//! This MVP supports plain payments, with metadata: no scripts, tokens, datums or mint.
 //! Unknown fields are rejected so an unsupported feature fails loudly.
 
 use std::collections::BTreeMap;
@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::metadata::Metadata;
 
 /// The graph IR. Maps are `BTreeMap`s so serialisation is canonical.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -35,7 +36,7 @@ pub struct Source {
 }
 
 /// One symbolic transaction.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Tx {
     /// Outputs spent. On the ledger inputs are a set, so order is not significant.
@@ -46,6 +47,12 @@ pub struct Tx {
     pub outputs: Vec<OutputSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
+    /// Transaction metadata by label (see [`crate::metadata`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: Metadata,
+    /// Colour tag, `rrggbb`, written under metadata label 1022.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// One output of a symbolic transaction.
