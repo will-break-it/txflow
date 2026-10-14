@@ -226,9 +226,10 @@ names.
   UTxO conflict at funding time, and only one can be funded.
 - **Large experiments**: funding outputs are split across as many chained funding
   transactions as `maxTxSize` requires.
-- **Long names**: transaction metadata carries only fixed-size ids (IR hash prefix, run
+- **Long names**: txflow's own message carries only fixed-size ids (IR hash prefix, run
   id, transaction index), never names or labels, so Cardano's 64-byte metadata string
-  limit cannot be hit.
+  limit cannot be hit. Metadata a spec asks for is checked against that limit at expand
+  time, so it fails before anything is funded.
 
 ## Requirements *(mandatory)*
 
@@ -279,8 +280,10 @@ names.
   MUST produce a byte-identical manifest. The manifest MUST NOT contain wall-clock data.
 - **FR-013**: Each transaction MUST carry CIP-20 message metadata (label 674) with
   short fixed-size identifiers only (IR hash prefix, run id, transaction index), so a
-  run's transactions can be attributed on chain and in node traces. It MAY also carry
-  the tx-firehose colour tag (label 1022) so existing mempool tooling keeps working.
+  run's transactions can be attributed on chain and in node traces. It carries the
+  tx-firehose colour tag (label 1022, three bytes of RGB) when the spec sets `color`, so
+  `mempool-monitor` shows it, and any further labels the spec sets in `metadata`
+  (data model §2).
 - **FR-014**: The manifest MUST record, per transaction: symbolic name, index, tx id,
   CBOR, size, resolved inputs, all conflict sets it belongs to, the conflict sets it is
   orphaned by, and labels; and for the run: network magic, era, protocol-parameter hash,

@@ -9,6 +9,7 @@ use blake2::Blake2bVar;
 
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Contention, Derived, Ir, Ref};
+use crate::metadata::Metadata;
 
 /// Largest total of (tx, upstream conflict) relations `derive` will compute.
 const MAX_RELATIONS: u64 = 2_000_000;
@@ -182,7 +183,8 @@ pub fn membership(
 
 /// `blake2b256:<hex>` over the canonical JSON of the IR without `derived`:
 /// object keys sorted, `inputs` and `reference_inputs` sorted (they are sets),
-/// empty `labels` and `reference_inputs` omitted. Streamed into the hasher,
+/// empty `labels`, `reference_inputs` and `metadata` and a missing `color`
+/// omitted, so a graph without them hashes as it did before they existed. Streamed into the hasher,
 /// so no copy of the IR is made, and independent of struct field order and
 /// of serde_json's `preserve_order` feature.
 pub fn ir_hash(ir: &Ir) -> Result<String> {
@@ -227,6 +229,53 @@ fn list(out: &mut impl Write, items: &[&String]) -> Result<()> {
     Ok(out.write_all(b"]")?)
 }
 
+/// Metadata as JSON: labels as strings, every object's keys sorted.
+fn metadata_json(out: &mut impl Write, metadata: &Metadata) -> Result<()> {
+    let mut labels: Vec<(String, &serde_json::Value)> =
+        metadata.iter().map(|(l, v)| (l.to_string(), v)).collect();
+    labels.sort_by(|a, b| a.0.cmp(&b.0));
+    out.write_all(b"{")?;
+    for (i, (label, value)) in labels.into_iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        text(out, &label)?;
+        out.write_all(b":")?;
+        json_value(out, value)?;
+    }
+    Ok(out.write_all(b"}")?)
+}
+
+fn json_value(out: &mut impl Write, value: &serde_json::Value) -> Result<()> {
+    match value {
+        serde_json::Value::Array(items) => {
+            out.write_all(b"[")?;
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.write_all(b",")?;
+                }
+                json_value(out, item)?;
+            }
+            Ok(out.write_all(b"]")?)
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.write_all(b"{")?;
+            for (i, key) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.write_all(b",")?;
+                }
+                text(out, key)?;
+                out.write_all(b":")?;
+                json_value(out, &map[key])?;
+            }
+            Ok(out.write_all(b"}")?)
+        }
+        scalar => Ok(serde_json::to_writer(out, scalar)?),
+    }
+}
+
 fn sorted_refs(items: &[String]) -> Vec<&String> {
     let mut refs: Vec<&String> = items.iter().collect();
     refs.sort();
@@ -250,11 +299,21 @@ fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
             out.write_all(b",")?;
         }
         text(out, name)?;
-        out.write_all(b":{\"inputs\":")?;
+        out.write_all(b":{")?;
+        if let Some(color) = &tx.color {
+            out.write_all(b"\"color\":")?;
+            text(out, color)?;
+            out.write_all(b",")?;
+        }
+        out.write_all(b"\"inputs\":")?;
         list(out, &sorted_refs(&tx.inputs))?;
         if !tx.labels.is_empty() {
             out.write_all(b",\"labels\":")?;
             list(out, &tx.labels.iter().collect::<Vec<_>>())?;
+        }
+        if !tx.metadata.is_empty() {
+            out.write_all(b",\"metadata\":")?;
+            metadata_json(out, &tx.metadata)?;
         }
         out.write_all(b",\"outputs\":[")?;
         for (k, output) in tx.outputs.iter().enumerate() {

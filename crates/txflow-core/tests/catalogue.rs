@@ -182,6 +182,7 @@ fn limits_name_the_number_and_the_limit() {
         max_chain_length: Some(5),
         max_outputs_per_tx: Some(1),
         max_funding_ada: Some(5),
+        max_metadata_bytes: None,
     };
     let report = check_within(&text, &tight, None);
     assert!(!report.ok);
@@ -206,5 +207,5 @@ fn the_committed_limits_file_parses() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../limits.json");
     let text = std::fs::read_to_string(path).expect("limits.json");
     let limits = txflow_core::limits::Limits::from_text(&text).expect("valid limits");
-    assert_eq!(limits.describe().len(), 4);
+    assert_eq!(limits.describe().len(), 5);
 }

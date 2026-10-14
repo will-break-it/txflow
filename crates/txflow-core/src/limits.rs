@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ir::{Ir, Ref};
+use crate::metadata::encoded_size;
 
 const LOVELACE_PER_ADA: u64 = 1_000_000;
 
@@ -31,6 +32,9 @@ pub struct Limits {
     /// Most ADA the funding outputs may hold together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_funding_ada: Option<u64>,
+    /// Most bytes of metadata and colour one transaction may ask for, encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_metadata_bytes: Option<u64>,
 }
 
 impl Limits {
@@ -57,6 +61,11 @@ impl Limits {
         }
         if let Some(n) = self.max_funding_ada {
             out.push(format!("At most {n} ADA of funding in total."));
+        }
+        if let Some(n) = self.max_metadata_bytes {
+            out.push(format!(
+                "At most {n} bytes of metadata per transaction, encoded, colour included."
+            ));
         }
         out
     }
@@ -95,6 +104,18 @@ impl Limits {
                 errors.push(format!(
                     "{} ADA of funding; this site allows at most {max} ADA",
                     lovelace.div_ceil(LOVELACE_PER_ADA)
+                ));
+            }
+        }
+        if let Some(max) = self.max_metadata_bytes {
+            let largest = ir
+                .txs
+                .iter()
+                .map(|(name, tx)| (name, encoded_size(&tx.metadata, tx.color.as_deref())))
+                .find(|(_, size)| *size as u64 > max);
+            if let Some((name, size)) = largest {
+                errors.push(format!(
+                    "tx `{name}` has {size} bytes of metadata; this site allows at most {max}"
                 ));
             }
         }

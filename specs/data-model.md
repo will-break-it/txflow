@@ -55,6 +55,8 @@ txs:
     template: { file: <path>.tx3, tx: <name>, args: { ... }, hash: <blake2b256> }  # optional (story 5)
     validity: { from_slot_offset: <i64>, ttl_slots: <u64> }  # optional, relative to replay start
     labels: [<string>, ...]
+    metadata: { <label>: <value> }     # optional, see below
+    color: <rrggbb>                    # optional colour tag, metadata label 1022
 ```
 
 Spending an output locked by `script:<v>` uses validator `<v>`'s execution budget for
@@ -104,6 +106,18 @@ derived:
   each template's `hash` (the blake2b-256 of the `.tx3` file, filled in at expand time), so
   editing a template or a validator changes the IR hash (FR-006).
 
+**Metadata and colour.** `metadata` maps labels (unsigned 64-bit integers) to values in
+the plain JSON mapping of `cardano-cli --json-metadata-no-schema`: integers, text, lists
+and maps with text keys; text starting with `0x` is a byte string. Expansion checks the
+ledger's rules (text and byte strings of at most 64 bytes, integers from -2^63 to
+2^64-1, no fractions, booleans or null) plus txflow's own: nesting at most 8 deep, at
+most 8 KB encoded per tx, and labels 674 (txflow's attribution message) and 1022
+reserved. `color` is written under 1022 as three bytes of RGB, the form
+`tx-firehose --color` writes and `mempool-monitor` paints by. Both go on experiment txs
+only, never on funding or sweep txs, beside the label 674 message in one auxiliary data
+map. Empty `metadata` and a missing `color` are left out of the canonical form, so a
+graph without them hashes as it did before they existed.
+
 ## 3. Experiment spec
 
 ```yaml
@@ -113,6 +127,8 @@ seed: <u64>
 params: { <name>: <integer> }          # referenced as {{ name }} in pattern args
 wallets:
   <name>: {}                            # MVP: all wallets bind to one key
+metadata: { <label>: <value> }          # optional, on every tx (§2)
+color: <rrggbb>                         # optional colour tag on every tx
 validators: { ... }                     # optional, same schema as §2
 policies: { ... }                       # optional, same schema as §2
 patterns:
@@ -120,11 +136,17 @@ patterns:
     use: <pattern>
     count: <expr>                       # instances to emit, default 1
     with: { <arg>: <expr> }
+    metadata: { <label>: <value> }      # on every tx it emits, over the spec's
+    color: <rrggbb>                     # over the spec's
 txs: { ... }                            # optional explicit IR txs, same schema as §2
 sources: { ... }                        # optional explicit sources
 schedule: { ... }                       # see §5
 expect: [ ... ]                         # see §7
 ```
+
+A tx's own `metadata` replaces the pattern's or spec's label by label (a whole label,
+no deep merge), and its own `color` replaces theirs; a pattern instance's do the same
+over the spec's.
 
 `<expr>` is a number, a `{{ param }}` substitution, or simple arithmetic over params
 (`{{ pairs * scale }}`). No conditionals or loops: anything richer belongs in a pattern.

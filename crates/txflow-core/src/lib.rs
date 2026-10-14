@@ -15,6 +15,7 @@ pub mod expand;
 pub mod expr;
 pub mod ir;
 pub mod limits;
+pub mod metadata;
 pub mod network;
 pub mod patterns;
 pub mod schedule;

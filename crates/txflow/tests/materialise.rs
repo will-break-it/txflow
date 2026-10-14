@@ -520,3 +520,33 @@ fn a_cardano_cli_dijkstra_tx_has_three_items() {
     assert_eq!(items(&bytes).len(), 3);
     assert!(conway_to_dijkstra(&bytes).is_err(), "already Dijkstra");
 }
+
+#[test]
+fn spec_metadata_and_colour_ride_along_with_the_message() {
+    let text = "version: 0\nexperiment: tagged\nseed: 1\nwallets: { alice: {} }\n\
+        color: ff0000\nmetadata: { 1337: { study: mempool, id: '0xbeef' } }\n\
+        patterns: [{ id: ds, use: conflict_set, with: { k: 2 } }]\n";
+    let spec = ExperimentSpec::from_yaml(text).expect("spec");
+    let ir = expand(&spec).expect("ir");
+    let m = materialise(&spec.experiment, &ir, 7, &context()).expect("materialises");
+    for entry in &m.txs {
+        let bytes = hex::decode(&entry.cbor_hex).expect("hex");
+        let tx = MultiEraTx::decode(&bytes).expect("decodes");
+        let metadata = tx.metadata();
+        let message = format!("{:?}", metadata.find(METADATA_LABEL).expect("label 674"));
+        assert!(message.contains("txflow/1 cli"), "{message}");
+        let color = metadata.find(1022).map(|c| format!("{c:?}"));
+        let study = metadata.find(1337).map(|s| format!("{s:?}"));
+        if entry.kind == TxKind::Funding {
+            assert_eq!((color, study), (None, None), "{}", entry.name);
+        } else {
+            let color = color.expect("label 1022");
+            assert_eq!(color, "Bytes(Bytes(ByteVec([255, 0, 0])))");
+            let study = study.expect("label 1337");
+            assert!(
+                study.contains("\"mempool\"") && study.contains("[190, 239]"),
+                "{study}"
+            );
+        }
+    }
+}

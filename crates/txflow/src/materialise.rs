@@ -19,10 +19,11 @@ use serde::Serialize;
 use crate::context::{ChainContext, NetworkName, OfferedUtxo, ProtocolParams, SecretKeyBytes};
 use crate::derive;
 use crate::error::{Error, Result};
-use crate::ir::{Amount, AmountKeyword, Ir};
+use crate::ir::{Amount, AmountKeyword, Ir, Tx};
+use crate::metadata::{auxiliary_data, Metadata};
 
 /// CIP-20 transaction message label, used to attribute txs on chain.
-pub const METADATA_LABEL: u64 = 674;
+pub const METADATA_LABEL: u64 = txflow_core::metadata::MESSAGE_LABEL;
 
 /// The first entry of every txflow tx's message: the tool and the version of
 /// this message's layout. [`watermark`] adds where the tx was built.
@@ -350,7 +351,7 @@ pub fn materialise(
             &carry,
             &[],
             &planned,
-            &metadata(&context.origin, &ir_prefix, &run_id, index),
+            &metadata(&context.origin, &ir_prefix, &run_id, index, None),
             &funding_key,
             pp,
             format,
@@ -422,7 +423,7 @@ pub fn materialise(
             &inputs,
             &refs,
             &planned,
-            &metadata(&context.origin, &ir_prefix, &run_id, index),
+            &metadata(&context.origin, &ir_prefix, &run_id, index, Some(tx)),
             &run_key,
             pp,
             format,
@@ -839,51 +840,23 @@ fn manifest_tx(
 }
 
 /// Shelley-format auxiliary data:
-/// `{674: {"msg": ["txflow/1 <origin>", "spec:<ir>", "run:<run>#<index>"]}}`.
+/// `{674: {"msg": ["txflow/1 <origin>", "spec:<ir>", "run:<run>#<index>"]}}`,
+/// plus the tx's own metadata and colour tag from the spec, if any.
 /// The run id and index also keep the members of a conflict set distinct.
-fn metadata(origin: &str, ir_prefix: &str, run_id: &str, index: usize) -> Vec<u8> {
-    message(&[
-        &watermark(origin),
-        &format!("spec:{ir_prefix}"),
-        &format!("run:{run_id}#{index}"),
-    ])
+fn metadata(origin: &str, ir_prefix: &str, run_id: &str, index: usize, tx: Option<&Tx>) -> Vec<u8> {
+    let empty = Metadata::new();
+    auxiliary_data(
+        &[
+            &watermark(origin),
+            &format!("spec:{ir_prefix}"),
+            &format!("run:{run_id}#{index}"),
+        ],
+        tx.map_or(&empty, |tx| &tx.metadata),
+        tx.and_then(|tx| tx.color.as_deref()),
+    )
 }
 
 /// `{674: {"msg": [parts...]}}`.
 pub(crate) fn message(parts: &[&str]) -> Vec<u8> {
-    let mut out = Vec::new();
-    cbor_head(&mut out, 5, 1); // map(1)
-    cbor_head(&mut out, 0, METADATA_LABEL);
-    cbor_head(&mut out, 5, 1); // map(1)
-    cbor_text(&mut out, "msg");
-    cbor_head(&mut out, 4, parts.len() as u64);
-    for part in parts {
-        cbor_text(&mut out, part);
-    }
-    out
-}
-
-pub(crate) fn cbor_text(out: &mut Vec<u8>, text: &str) {
-    cbor_head(out, 3, text.len() as u64);
-    out.extend_from_slice(text.as_bytes());
-}
-
-/// CBOR major type and argument, shortest encoding.
-pub(crate) fn cbor_head(out: &mut Vec<u8>, major: u8, value: u64) {
-    let m = major << 5;
-    if value < 24 {
-        out.push(m | value as u8);
-    } else if value <= u64::from(u8::MAX) {
-        out.push(m | 24);
-        out.push(value as u8);
-    } else if value <= u64::from(u16::MAX) {
-        out.push(m | 25);
-        out.extend_from_slice(&(value as u16).to_be_bytes());
-    } else if value <= u64::from(u32::MAX) {
-        out.push(m | 26);
-        out.extend_from_slice(&(value as u32).to_be_bytes());
-    } else {
-        out.push(m | 27);
-        out.extend_from_slice(&value.to_be_bytes());
-    }
+    auxiliary_data(parts, &Metadata::new(), None)
 }

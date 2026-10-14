@@ -2,6 +2,8 @@ name: Release
 
 # Push a tag to publish a GitHub release:
 #   spec-v<N>  the spec format: its JSON Schema and pattern catalogue
+#   spec-v<N>.<r>  revision r of format N: additions that keep every spec
+#              valid; publishes schema/v<N>/ as it is now
 #   v<x.y.z>   the txflow CLI (must match the workspace version), with
 #              binaries for Linux and macOS and the current schema
 on:
@@ -22,17 +24,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          dir="schema/v${TAG#spec-v}"
+          spec="${TAG#spec-v}"
+          dir="schema/v${spec%%.*}"
           test -f "$dir/txflow.schema.json" || { echo "no $dir/txflow.schema.json"; exit 1; }
           cat > notes.md <<NOTES
-          Version ${TAG#spec-v} of the txflow experiment spec, the \`version:\` field every spec starts with.
+          Version ${spec} of the txflow experiment spec. Specs say \`version: ${spec%%.*}\`, the field every spec starts with.
 
           - \`txflow.schema.json\`: the JSON Schema (draft 2020-12), for editors and validators.
           - \`catalogue.md\`: every pattern, its arguments, ranges and defaults.
 
           Reference: https://txflow.fun/spec.html
           NOTES
-          gh release create "$TAG" --title "Spec v${TAG#spec-v}" --notes-file notes.md \
+          gh release create "$TAG" --title "Spec v${spec}" --notes-file notes.md \
             "$dir/txflow.schema.json" "$dir/catalogue.md"
 
   cli:

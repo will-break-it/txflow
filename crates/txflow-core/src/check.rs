@@ -5,6 +5,8 @@
 //! a person can confirm against what they asked for; on failure, the error
 //! message, which names the pattern, tx or field at fault.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use crate::expand::expand;
@@ -175,6 +177,7 @@ fn summarise(spec: &ExperimentSpec, ir: &Ir, plan: Option<&Plan>) -> Summary {
             plural(derived.reference_contention.len())
         ));
     }
+    describe_tags(ir, &mut description);
     if let Some(plan) = plan {
         describe_plan(plan, &mut description);
     }
@@ -208,6 +211,50 @@ fn ada(lovelace: u64) -> String {
     } else {
         let digits = format!("{fraction:06}");
         format!("{whole}.{}", digits.trim_end_matches('0'))
+    }
+}
+
+/// Which colours and metadata labels the transactions carry, with counts.
+fn describe_tags(ir: &Ir, description: &mut Vec<String>) {
+    let mut colors: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut labels: BTreeMap<u64, usize> = BTreeMap::new();
+    for tx in ir.txs.values() {
+        if let Some(color) = &tx.color {
+            *colors.entry(color).or_default() += 1;
+        }
+        for label in tx.metadata.keys() {
+            *labels.entry(label.0).or_default() += 1;
+        }
+    }
+    let counted = |items: Vec<(String, usize)>| {
+        items
+            .into_iter()
+            .map(|(item, n)| format!("{item} on {n} tx{}", plural(n)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if !colors.is_empty() {
+        description.push(format!(
+            "Colour tag: {}.",
+            counted(
+                colors
+                    .into_iter()
+                    .map(|(c, n)| (c.to_string(), n))
+                    .collect()
+            )
+        ));
+    }
+    if !labels.is_empty() {
+        description.push(format!(
+            "Metadata label{} {}.",
+            plural(labels.len()),
+            counted(
+                labels
+                    .into_iter()
+                    .map(|(l, n)| (l.to_string(), n))
+                    .collect()
+            )
+        ));
     }
 }
 

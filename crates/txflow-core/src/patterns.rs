@@ -230,6 +230,7 @@ fn independent(args: &mut Args, owner: &str) -> Result<Fragment> {
                 reference_inputs: vec![],
                 outputs: outputs(owner, outs),
                 labels: vec![],
+                ..Tx::default()
             },
         );
     }
@@ -259,6 +260,7 @@ fn chain(args: &mut Args, owner: &str) -> Result<Fragment> {
                 reference_inputs: vec![],
                 outputs: outputs(owner, outs),
                 labels: vec![],
+                ..Tx::default()
             },
         );
     }
@@ -292,6 +294,7 @@ fn fan_out(args: &mut Args, owner: &str) -> Result<Fragment> {
             reference_inputs: vec![],
             outputs: root_outputs,
             labels: vec![],
+            ..Tx::default()
         },
     );
     for i in 0..width {
@@ -302,6 +305,7 @@ fn fan_out(args: &mut Args, owner: &str) -> Result<Fragment> {
                 reference_inputs: vec![],
                 outputs: vec![change_to(owner)],
                 labels: vec![],
+                ..Tx::default()
             },
         );
     }
@@ -325,6 +329,7 @@ fn fan_in(args: &mut Args, owner: &str) -> Result<Fragment> {
                 reference_inputs: vec![],
                 outputs: vec![change_to(owner)],
                 labels: vec![],
+                ..Tx::default()
             },
         );
         merge_inputs.push(format!("l{i}.0"));
@@ -336,6 +341,7 @@ fn fan_in(args: &mut Args, owner: &str) -> Result<Fragment> {
             reference_inputs: vec![],
             outputs: vec![change_to(owner)],
             labels: vec![],
+            ..Tx::default()
         },
     );
     Ok(fragment)
@@ -357,6 +363,7 @@ fn conflict_set(args: &mut Args, owner: &str) -> Result<Fragment> {
                 reference_inputs: vec![],
                 outputs: vec![change_to(owner)],
                 labels: vec![],
+                ..Tx::default()
             },
         );
     }
@@ -375,6 +382,7 @@ fn branch_merge(args: &mut Args, owner: &str) -> Result<Fragment> {
             reference_inputs: vec![],
             outputs: vec![change_to(owner)],
             labels: vec![],
+            ..Tx::default()
         },
     );
     Ok(fragment)
@@ -427,6 +435,7 @@ fn conflicting_chains(args: &mut Args, flags: &Flags, owner: &str) -> Result<Fra
                     reference_inputs: vec![],
                     outputs: vec![change_to(owner)],
                     labels: vec![format!("side-{side}")],
+                    ..Tx::default()
                 },
             );
         }

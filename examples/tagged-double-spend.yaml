@@ -1,0 +1,27 @@
+# A three-way double spend whose copies mempool-monitor paints red, among
+# background traffic it paints green. `color` writes metadata label 1022 the
+# way tx-firehose --color does; `metadata` adds a label of your own to every
+# transaction, here naming the study and the round.
+# Check it with: txflow check examples/tagged-double-spend.yaml --network networks/musashi.json
+version: 0
+experiment: tagged-double-spend
+seed: 1
+wallets:
+  alice: {}
+color: 00ff88
+metadata:
+  1337: { study: mempool-fragmentation, round: 1 }
+patterns:
+  - id: background
+    use: chain
+    with: { length: 5 }
+  - id: ds
+    use: conflict_set
+    with: { k: 3 }
+    color: ff0000
+schedule:
+  releases:
+    - { select: { pattern: background }, target: frankfurt, spacing: 200ms }
+    - { select: { names: [ds/x1] }, target: frankfurt, at: 500ms }
+    - { select: { names: [ds/x2] }, target: virginia, at: 500ms }
+    - { select: { names: [ds/x3] }, target: tokyo, at: 500ms }

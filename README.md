@@ -56,7 +56,9 @@ schedule:
 
 Patterns (`chain`, `conflict_set`, `fan_out`, `branch_merge`, …) are the
 building blocks. Repeat them with `count`, join them with your own
-transactions, and time each release. Every field is in the
+transactions, and time each release. Tag transactions with your own `metadata`,
+or a `color` that `mempool-monitor` paints them in
+([example](examples/tagged-double-spend.yaml)). Every field is in the
 [spec reference](https://txflow.fun/spec.html); the JSON Schema is at
 [txflow.fun/schema/v0.json](https://txflow.fun/schema/v0.json) (source in
 [`core/schema/v0/`](schema/v0/)).
