@@ -14,6 +14,7 @@ echo "$CARDANO_NODE_SOCKET_PATH $*" >> "${dir}/calls"
 case "$*" in
   "query tip"*) echo '{"era":"Dijkstra","slot":42}' ;;
   *"query utxo"*) echo '{"ab#0":{"value":{"lovelace":5}}}' ;;
+  *"tx-mempool info"*) echo '{"capacityInBytes":180224,"numberOfTxs":3,"sizeInBytes":1250,"slot":42}' ;;
   *"tx-exists aaaa"*) echo '{"exists":true,"slot":42,"txId":"aa"}' ;;
   *"tx-exists"*) echo '{"exists":false,"slot":42}' ;;
   *"transaction submit"*)
@@ -267,6 +268,48 @@ test("a bridge whose node trace cannot be read says it is not reading it", async
     assert.equal(index.events(null).reading, false);
   } finally {
     stop();
+  }
+});
+
+test("/node says how full the mempool is, and the tx cache and fetch bytes from the trace", async () => {
+  const index = new TraceIndex({ start: 0 });
+  const line = (at, ns, data) => JSON.stringify({ at, ns, data, sev: "Info", host: "relay" });
+  index.ingest(line("2026-10-14T07:19:58.5Z", "Mempool.AddedTx", { kind: "TraceMempoolAddedTx", tx: { txIdFull: "dd".repeat(32) }, mempoolSize: { numTxs: 7, bytes: 2900 } }));
+  index.ingest(line("2026-10-14T07:20:00Z", "LedgerMetrics", { slot: 2580300, utxoSize: 181944, chainDensity: 0.046 }));
+  index.ingest(line("2026-10-14T07:20:28.9Z", "Consensus.LeiosKernel.BodyHits", {
+    acquired: 0, cacheLoad: 0.027, cacheTxCount: 113163, ebHash: "13".repeat(32), ebSlot: 2580328,
+    mempoolHits: 2, missedBoth: 375, tracked: 0, txsInEb: 377, validated: 0,
+  }));
+  index.ingest(line("2026-10-14T07:20:29.4Z", "Consensus.LeiosKernel.FetchTxsArrival", { evictedBytes: 0, extraBytes: 10, goodBytes: 93119, invalidBytes: 0 }));
+
+  const b = await start({}, index);
+  try {
+    const node = await (await fetch(`${b.base}/node?relay=frankfurt`)).json();
+    assert.equal(node.relay, "frankfurt");
+    assert.deepEqual(node.mempool, { capacity_bytes: 180224, size_bytes: 1250, txs: 3, slot: 42 });
+    assert.match(await readFile(join(b.dir, "calls"), "utf8"), /musashi-frankfurt\.socket dijkstra query tx-mempool info --testnet-magic 164/);
+    assert.deepEqual(node.trace.mempool, { at: "2026-10-14T07:19:58.5Z", at_ms: Date.parse("2026-10-14T07:19:58.5Z"), txs: 7, bytes: 2900 });
+    assert.equal(node.trace.ledger.utxo_size, 181944);
+    const [hits] = node.trace.body_hits;
+    assert.equal(hits.cache_tx_count, 113163);
+    assert.equal(hits.missed_both, 375);
+    assert.equal(hits.txs_in_eb, 377);
+    assert.equal(node.trace.fetch_arrivals[0].good_bytes, 93119);
+    // Only what happened since a time, when asked.
+    const later = await (await fetch(`${b.base}/node?relay=frankfurt&since_ms=${Date.parse("2026-10-14T07:20:29Z")}`)).json();
+    assert.deepEqual([later.trace.body_hits.length, later.trace.fetch_arrivals.length], [0, 1]);
+    assert.equal((await fetch(`${b.base}/node?relay=frankfurt&since_ms=soon`)).status, 400);
+  } finally {
+    b.close();
+  }
+  // Without the node's trace, /node still says how full the mempool is.
+  const plain = await start();
+  try {
+    const node = await (await fetch(`${plain.base}/node?relay=virginia`)).json();
+    assert.equal(node.mempool.txs, 3);
+    assert.equal(node.trace, null);
+  } finally {
+    plain.close();
   }
 });
 

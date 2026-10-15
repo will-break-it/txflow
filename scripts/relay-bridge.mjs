@@ -22,6 +22,8 @@
 //   POST /submit?relay=  {"cbor_hex"}  cardano-cli transaction submit
 //   GET  /events?relay=&since=&tx=…    the node's own mempool and block events (TRACE_FILE)
 //   POST /events?relay=  {"since", "tx_ids"}   the same, for up to 5,000 tx ids
+//   GET  /node?relay=&since_ms=        how full the node's mempool is, and from its
+//                                      trace its tx cache, EB fetch bytes and ledger size
 //
 // /events reads the node's machine trace instead of asking the node: when the
 // node added a tx to its mempool, removed it (and why) or rejected it, and
@@ -173,6 +175,20 @@ async function query(cfg, relay, args) {
   return JSON.parse(out.stdout);
 }
 
+/** `query tx-mempool info`: {capacity_bytes, size_bytes, txs, slot}. */
+async function mempoolInfo(cfg, relay) {
+  const eraName = (await era(cfg, relay)).toLowerCase();
+  const r = await runQuery(cfg, cfg.relays[relay], [eraName, "query", "tx-mempool", "info", "--testnet-magic", String(cfg.magic)]);
+  if (!r.ok) throw new BridgeError(502, r.stderr || "query tx-mempool info failed");
+  const info = JSON.parse(r.stdout);
+  return {
+    capacity_bytes: info.capacityInBytes ?? null,
+    size_bytes: info.sizeInBytes ?? null,
+    txs: info.numberOfTxs ?? null,
+    slot: info.slot ?? null,
+  };
+}
+
 // `query tx-mempool tx-exists` answers for one tx at a time, so ask for each,
 // a few at once.
 async function mempool(cfg, relay, ids) {
@@ -272,6 +288,13 @@ export function bridge(cfg = config(), trace = null) {
         const relay = relayOf(cfg, url);
         return json(res, 200, { relay, txs: await mempool(cfg, relay, ids) });
       }
+      if (route === "GET /node") {
+        const relay = relayOf(cfg, url);
+        const since = url.searchParams.get("since_ms");
+        if (since != null && !/^\d+$/.test(since)) throw new BridgeError(400, "since_ms must be milliseconds since the epoch");
+        const mempool = await mempoolInfo(cfg, relay).catch((error) => ({ error: error.message }));
+        return json(res, 200, { relay, at_ms: Date.now(), mempool, trace: trace ? trace.node(since == null ? null : Number(since)) : null });
+      }
       if (route === "POST /submit") {
         const relay = relayOf(cfg, url);
         return json(res, 200, await submit(cfg, relay, await readBody(req)));
@@ -322,7 +345,12 @@ const KEPT = [
   "ChainDB.AddBlockEvent.AddedToCurrentChain",
   "ChainDB.AddBlockEvent.SwitchedToAFork",
   "LeiosFetch.Remote.Receive.Block",
+  "Consensus.LeiosKernel.BodyHits",
+  "Consensus.LeiosKernel.FetchTxsArrival",
+  "LedgerMetrics",
 ];
+// The node's own summaries (/node) keep only their latest this many each.
+const NODE_HISTORY = 100;
 
 /** RFC 3339 with nanoseconds -> milliseconds since the epoch, to the microsecond. */
 export function traceMs(at) {
@@ -391,6 +419,22 @@ export class TraceIndex {
     this.serialized = new Map(); // a tx's serialized hash (EBs use it) -> its id
     this.seq = start;
     this.tip = null;
+    // The node's state as its trace tells it, for /node: the mempool's size
+    // after its last change, each arriving EB's hits in the mempool and the
+    // tx cache, the bytes of EB tx fetches, and the ledger's size.
+    this.state = { mempool: null, bodyHits: [], arrivals: [], ledger: null };
+  }
+
+  /** The node's state from its trace; the lists only from `sinceMs` on when given. */
+  node(sinceMs = null) {
+    const after = (list) => (sinceMs == null ? list : list.filter((e) => e.at_ms >= sinceMs));
+    const { mempool, bodyHits, arrivals, ledger } = this.state;
+    return { reading: this.reading, mempool, body_hits: after(bodyHits), fetch_arrivals: after(arrivals), ledger };
+  }
+
+  keep(list, entry) {
+    list.push(entry);
+    if (list.length > NODE_HISTORY) list.shift();
   }
 
   push(event) {
@@ -461,6 +505,41 @@ export class TraceIndex {
       if (id && hash) this.remember(this.serialized, hash, id, this.max.hashes);
       return id;
     };
+    // Mempool events carry its size after them (when the node's tracer gives it).
+    const size = d.mempoolSize;
+    if (size && (ns === "Mempool.AddedTx" || ns === "Mempool.RemoveTxs")) {
+      this.state.mempool = { at: e.at, at_ms: base.at_ms, txs: size.numTxs ?? null, bytes: size.bytes ?? null };
+    }
+    if (ns === "Consensus.LeiosKernel.BodyHits") {
+      this.keep(this.state.bodyHits, {
+        ...base,
+        eb: d.ebHash ?? null,
+        eb_slot: d.ebSlot ?? null,
+        txs_in_eb: d.txsInEb ?? null,
+        mempool_hits: d.mempoolHits ?? null,
+        tracked: d.tracked ?? null,
+        acquired: d.acquired ?? null,
+        validated: d.validated ?? null,
+        missed_both: d.missedBoth ?? null,
+        cache_tx_count: d.cacheTxCount ?? null,
+        cache_load: d.cacheLoad ?? null,
+      });
+      return;
+    }
+    if (ns === "Consensus.LeiosKernel.FetchTxsArrival") {
+      this.keep(this.state.arrivals, {
+        ...base,
+        good_bytes: d.goodBytes ?? 0,
+        extra_bytes: d.extraBytes ?? 0,
+        evicted_bytes: d.evictedBytes ?? 0,
+        invalid_bytes: d.invalidBytes ?? 0,
+      });
+      return;
+    }
+    if (ns === "LedgerMetrics") {
+      this.state.ledger = { ...base, slot: d.slot ?? null, utxo_size: d.utxoSize ?? null, chain_density: d.chainDensity ?? null };
+      return;
+    }
     if (ns === "Mempool.AddedTx") {
       const tx = idOf(d.tx);
       if (tx) this.push({ ...base, kind: "added", tx });
