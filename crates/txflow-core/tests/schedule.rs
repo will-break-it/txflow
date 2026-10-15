@@ -297,9 +297,20 @@ fn a_temporary_relay_says_when_it_goes_in_utc() {
         )
     };
     let network = Network::from_text(&file("2026-10-16T12:13:00Z")).expect("until");
-    assert_eq!(network.relays[0].until.as_deref(), Some("2026-10-16T12:13:00Z"));
-    for bad in ["2026-10-16", "2026-10-16T12:13:00+02:00", "2026-10-16 12:13:00Z", "tomorrow"] {
+    assert_eq!(
+        network.relays[0].until.as_deref(),
+        Some("2026-10-16T12:13:00Z")
+    );
+    for bad in [
+        "2026-10-16",
+        "2026-10-16T12:13:00+02:00",
+        "2026-10-16 12:13:00Z",
+        "tomorrow",
+    ] {
         let error = Network::from_text(&file(bad)).expect_err(bad);
-        assert!(error.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"), "{error}");
+        assert!(
+            error.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"),
+            "{error}"
+        );
     }
 }
