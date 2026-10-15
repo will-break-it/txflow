@@ -313,6 +313,52 @@ test("/node says how full the mempool is, and the tx cache and fetch bytes from 
   }
 });
 
+test("/logs serves the notable trace lines of a time window, cut and counted", async () => {
+  const index = new TraceIndex({ start: 0, maxLines: 4 });
+  const line = (at, ns, data = {}) => JSON.stringify({ at, ns, data, sev: "Info", host: "relay" });
+  const lines = [
+    line("2026-10-14T07:20:00Z", "Net.Mux.Remote.Bearer.RecvStart"),
+    line("2026-10-14T07:20:01Z", "Mempool.AddedTx", { tx: { txIdFull: "dd".repeat(32) }, mempoolSize: { numTxs: 1, bytes: 300 } }),
+    line("2026-10-14T07:20:02Z", "Consensus.LeiosKernel.VoteAcquired", { voter: 1 }),
+    line("2026-10-14T07:20:03Z", "ChainSync.Client.RolledBack", { tip: "x" }),
+    line("2026-10-14T07:20:04Z", "Consensus.LeiosKernel.BodyHits", { txsInEb: 3, note: "y".repeat(5000) }),
+    line("2026-10-14T07:20:05Z", "Mempool.RejectedTx", { tx: { txIdFull: "ee".repeat(32) }, err: { reason: ["BadInputsUTxO"] } }),
+    line("2026-10-14T07:20:06Z", "Consensus.LeiosKernel.Certified", {}),
+  ];
+  for (const l of lines) index.ingest(l);
+
+  const b = await start({}, index);
+  try {
+    // The bound keeps the newest 4 logged lines; mux and per-tx mempool lines are not logged.
+    const all = await (await fetch(`${b.base}/logs?relay=frankfurt`)).json();
+    assert.deepEqual(
+      all.lines.map((l) => l.ns),
+      ["ChainSync.Client.RolledBack", "Consensus.LeiosKernel.BodyHits", "Mempool.RejectedTx", "Consensus.LeiosKernel.Certified"],
+    );
+    assert.equal(all.oldest_ms, Date.parse("2026-10-14T07:20:03Z"));
+    assert.ok(all.lines[1].line.length <= 2_001 && all.lines[1].line.endsWith("…"));
+    assert.equal(all.lines[2].line, lines[5]);
+
+    const window = `from_ms=${Date.parse("2026-10-14T07:20:04Z")}&to_ms=${Date.parse("2026-10-14T07:20:06Z")}`;
+    const consensus = await (await fetch(`${b.base}/logs?relay=frankfurt&${window}&ns=Consensus.&limit=1`)).json();
+    assert.deepEqual(consensus.lines.map((l) => l.ns), ["Consensus.LeiosKernel.BodyHits"]);
+    assert.deepEqual(consensus.counts, { "Consensus.LeiosKernel.BodyHits": 1, "Consensus.LeiosKernel.Certified": 1 });
+    assert.equal(consensus.more, true);
+    assert.equal(consensus.next_from_ms, Date.parse("2026-10-14T07:20:06Z"));
+
+    assert.equal((await fetch(`${b.base}/logs?relay=frankfurt&from_ms=soon`)).status, 400);
+    assert.equal((await fetch(`${b.base}/logs?relay=frankfurt&limit=5000`)).status, 400);
+  } finally {
+    b.close();
+  }
+  const plain = await start();
+  try {
+    assert.equal((await fetch(`${plain.base}/logs?relay=virginia`)).status, 404);
+  } finally {
+    plain.close();
+  }
+});
+
 test("a bridge without the node's trace says so, so the Worker polls instead", async () => {
   const b = await start();
   try {

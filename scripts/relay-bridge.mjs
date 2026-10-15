@@ -24,6 +24,8 @@
 //   POST /events?relay=  {"since", "tx_ids"}   the same, for up to 5,000 tx ids
 //   GET  /node?relay=&since_ms=        how full the node's mempool is, and from its
 //                                      trace its tx cache, EB fetch bytes and ledger size
+//   GET  /logs?relay=&from_ms=&to_ms=&ns=&limit=   the node's own trace lines in a
+//                                      time window: the notable namespaces only (LOGGED)
 //
 // /events reads the node's machine trace instead of asking the node: when the
 // node added a tx to its mempool, removed it (and why) or rejected it, and
@@ -295,6 +297,19 @@ export function bridge(cfg = config(), trace = null) {
         const mempool = await mempoolInfo(cfg, relay).catch((error) => ({ error: error.message }));
         return json(res, 200, { relay, at_ms: Date.now(), mempool, trace: trace ? trace.node(since == null ? null : Number(since)) : null });
       }
+      if (route === "GET /logs") {
+        const relay = relayOf(cfg, url);
+        if (!trace) throw new BridgeError(404, "this bridge does not read its node's trace");
+        const ms = (name) => {
+          const v = url.searchParams.get(name);
+          if (v != null && !/^\d+$/.test(v)) throw new BridgeError(400, `${name} must be milliseconds since the epoch`);
+          return v == null ? null : Number(v);
+        };
+        const limit = Number(url.searchParams.get("limit") ?? 200);
+        if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LOG_LINES) throw new BridgeError(400, `limit must be 1 to ${MAX_LOG_LINES}`);
+        const prefixes = url.searchParams.getAll("ns").filter(Boolean);
+        return json(res, 200, { relay, ...trace.logs({ fromMs: ms("from_ms"), toMs: ms("to_ms"), prefixes, limit }) });
+      }
       if (route === "POST /submit") {
         const relay = relayOf(cfg, url);
         return json(res, 200, await submit(cfg, relay, await readBody(req)));
@@ -351,6 +366,34 @@ const KEPT = [
 ];
 // The node's own summaries (/node) keep only their latest this many each.
 const NODE_HISTORY = 100;
+// The trace lines /logs serves: what a node says about its mempool, consensus,
+// chain and peers, as written. Per-tx mempool lines are left out (they flood
+// the window under load, and /events has them per tx), as are the mux, keep
+// alive and other chatter that makes up most of the trace.
+const LOGGED = [
+  "Mempool.",
+  "Consensus.",
+  "Forge.",
+  "LedgerMetrics",
+  "ChainDB.AddBlockEvent.",
+  "ChainDB.CopyToImmutableDBEvent.",
+  "ChainSync.Client.RolledBack",
+  "ChainSync.Client.FoundIntersection",
+  "ChainSync.Client.Termination",
+  "BlockFetch.Client.CompletedBlockFetch",
+  "LeiosFetch.Remote.Receive.",
+  "LeiosNotify.Remote.Receive.",
+  "Net.ConnectionManager.Remote.ConnectError",
+  "Net.Mux.Remote.ExceptionExit",
+  "Net.InboundGovernor.Remote.MuxErrored",
+  "Net.PeerSelection.Counters",
+];
+const NOT_LOGGED = ["Mempool.AddedTx", "Mempool.RemoveTxs", "Mempool.AttemptAdd"];
+export const logged = (ns) => LOGGED.some((p) => ns.startsWith(p)) && !NOT_LOGGED.includes(ns);
+// A logged line longer than this is cut (an EB's tx list can run to megabytes).
+const MAX_LINE_CHARS = 2_000;
+// /logs answers with at most this many lines; the next window starts after the last.
+const MAX_LOG_LINES = 1_000;
 
 /** RFC 3339 with nanoseconds -> milliseconds since the epoch, to the microsecond. */
 export function traceMs(at) {
@@ -397,11 +440,12 @@ export class TraceIndex {
     maxBlocks = 500,
     maxHashes = 200_000,
     maxWatched = 20_000,
+    maxLines = 20_000,
     watchMs = 60 * 60_000,
     start = Date.now() * 1000,
     now = () => Date.now(),
   } = {}) {
-    this.max = { events: maxEvents, blocks: maxBlocks, hashes: maxHashes, watched: maxWatched };
+    this.max = { events: maxEvents, blocks: maxBlocks, hashes: maxHashes, watched: maxWatched, lines: maxLines };
     this.watchMs = watchMs;
     this.now = now;
     // Events, oldest first, from log[head] on: dropping the oldest moves head
@@ -423,6 +467,49 @@ export class TraceIndex {
     // after its last change, each arriving EB's hits in the mempool and the
     // tx cache, the bytes of EB tx fetches, and the ledger's size.
     this.state = { mempool: null, bodyHits: [], arrivals: [], ledger: null };
+    // The LOGGED lines as written (cut to MAX_LINE_CHARS), oldest first, for /logs.
+    this.lines = [];
+    this.linesHead = 0;
+  }
+
+  /**
+   * The logged lines from `fromMs` to `toMs` (either open), only of the
+   * namespaces starting with one of `prefixes` when given, at most `limit`
+   * from the start of the window: {lines: [{at_ms, ns, line}], counts: lines
+   * per namespace in the whole window, more, next_from_ms, oldest_ms}.
+   */
+  logs({ fromMs = null, toMs = null, prefixes = [], limit = 200 } = {}) {
+    const lines = [];
+    const counts = {};
+    let more = false;
+    let next = null;
+    for (let i = this.linesHead; i < this.lines.length; i++) {
+      const l = this.lines[i];
+      if (fromMs != null && l.at_ms < fromMs) continue;
+      if (toMs != null && l.at_ms > toMs) break;
+      if (prefixes.length && !prefixes.some((p) => l.ns.startsWith(p))) continue;
+      counts[l.ns] = (counts[l.ns] ?? 0) + 1;
+      if (lines.length < limit) lines.push(l);
+      else if (!more) {
+        more = true;
+        next = l.at_ms;
+      }
+    }
+    const oldest = this.lines[this.linesHead]?.at_ms ?? null;
+    return { reading: this.reading, oldest_ms: oldest, counts, more, next_from_ms: next, lines };
+  }
+
+  keepLine(ns, line) {
+    const atMs = traceMs(/"at":"([^"]+)"/.exec(line.slice(0, 120))?.[1]);
+    if (atMs == null) return;
+    this.lines.push({ at_ms: atMs, ns, line: line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}…` : line });
+    if (this.lines.length - this.linesHead > this.max.lines) {
+      this.lines[this.linesHead++] = undefined;
+      if (this.linesHead >= this.max.lines) {
+        this.lines = this.lines.slice(this.linesHead);
+        this.linesHead = 0;
+      }
+    }
   }
 
   /** The node's state from its trace; the lists only from `sinceMs` on when given. */
@@ -490,6 +577,7 @@ export class TraceIndex {
     const at = line.indexOf('"ns":"');
     if (at < 0 || at > 80) return;
     const ns = line.slice(at + 6, line.indexOf('"', at + 6));
+    if (logged(ns)) this.keepLine(ns, line);
     if (!KEPT.includes(ns)) return;
     let e;
     try {
