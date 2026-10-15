@@ -287,3 +287,19 @@ fn a_relay_renamed_after_its_city_still_answers_to_its_old_id() {
         { "id": "b", "label": "B", "host": "h", "via": ["n2c"] } ] }"#;
     assert!(Network::from_text(twice).is_err());
 }
+
+#[test]
+fn a_temporary_relay_says_when_it_goes_in_utc() {
+    let file = |until: &str| {
+        format!(
+            r#"{{ "id": "t", "name": "T", "protocol": "Ouroboros Leios", "magic": 1,
+                 "relays": [ {{ "id": "oregon", "label": "Oregon", "host": "10.0.0.1", "via": ["n2c"], "until": "{until}" }} ] }}"#
+        )
+    };
+    let network = Network::from_text(&file("2026-10-16T12:13:00Z")).expect("until");
+    assert_eq!(network.relays[0].until.as_deref(), Some("2026-10-16T12:13:00Z"));
+    for bad in ["2026-10-16", "2026-10-16T12:13:00+02:00", "2026-10-16 12:13:00Z", "tomorrow"] {
+        let error = Network::from_text(&file(bad)).expect_err(bad);
+        assert!(error.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"), "{error}");
+    }
+}

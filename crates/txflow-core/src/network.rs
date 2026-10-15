@@ -67,6 +67,25 @@ pub struct Relay {
     /// TCP port of the node-to-client bridge, when it has a fixed one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n2c_port: Option<u16>,
+    /// When a temporary relay goes away, as UTC `YYYY-MM-DDTHH:MM:SSZ`. From
+    /// then on the site leaves it out of the network it serves, so neither
+    /// the model nor a run sees it; nothing here compares it with a clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`, the one form `until` takes, so that it sorts and
+/// parses the same everywhere (JavaScript's `Date.parse` included).
+fn is_utc_instant(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 20
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b'T',
+            13 | 16 => *c == b':',
+            19 => *c == b'Z',
+            _ => c.is_ascii_digit(),
+        })
 }
 
 fn default_n2n_port() -> u16 {
@@ -91,6 +110,14 @@ impl Network {
                     "network file: relay `{}` takes neither `n2n` nor `n2c`",
                     relay.id
                 )));
+            }
+            if let Some(until) = &relay.until {
+                if !is_utc_instant(until) {
+                    return Err(Error::Spec(format!(
+                        "network file: relay `{}` has `until` {until:?}; write it as UTC YYYY-MM-DDTHH:MM:SSZ",
+                        relay.id
+                    )));
+                }
             }
         }
         if let Some(explorer) = &network.explorer {

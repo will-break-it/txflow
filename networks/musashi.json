@@ -3,7 +3,7 @@
   "name": "Musashi",
   "protocol": "Ouroboros Leios",
   "magic": 164,
-  "description": "The Leios test network. Seven relays named after their AWS regions' cities: Frankfurt, N. Virginia and Tokyo, and, until 2026-10-16 12:13 UTC, Oregon, Sydney, São Paulo and Mumbai; the earlier ids europe, americas and asia still work in specs. Nodes listen for node-to-node on 3010 and serve node-to-client only on their local socket, reached over SSH. Both are open to allow-listed addresses only. Hosts are a snapshot of 2026-10-15 and change when an instance is stopped.",
+  "description": "The Leios test network. Relays named after their AWS regions' cities: Frankfurt, N. Virginia and Tokyo, and temporary ones that leave the site at their `until` time; the earlier ids europe, americas and asia still work in specs. Nodes listen for node-to-node on 3010 and serve node-to-client only on their local socket, reached over SSH. Both are open to allow-listed addresses only. Hosts are a snapshot of 2026-10-15 and change when an instance is stopped.",
   "relays": [
     {
       "id": "frankfurt",
@@ -52,7 +52,8 @@
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010
+      "n2n_port": 3010,
+      "until": "2026-10-16T12:13:00Z"
     },
     {
       "id": "sydney",
@@ -62,7 +63,8 @@
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010
+      "n2n_port": 3010,
+      "until": "2026-10-16T12:13:00Z"
     },
     {
       "id": "saopaulo",
@@ -72,7 +74,8 @@
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010
+      "n2n_port": 3010,
+      "until": "2026-10-16T12:13:00Z"
     },
     {
       "id": "mumbai",
@@ -82,7 +85,8 @@
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010
+      "n2n_port": 3010,
+      "until": "2026-10-16T12:13:00Z"
     }
   ],
   "explorer": {

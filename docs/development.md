@@ -34,6 +34,11 @@ error. Relay addresses are public configuration, not secrets. They change when
 an instance is stopped. `via` defaults to `n2c`, so the node answers accept or
 reject.
 
+A temporary relay carries `until`, a UTC time written `YYYY-MM-DDTHH:MM:SSZ`.
+From then on a site leaves it out of the network it serves: the model's
+prompt, the page's checks and new runs no longer see it. `txflow check`
+itself ignores `until`; it compares nothing with a clock.
+
 A limits file (example: [`limits.json`](../limits.json)) caps what one
 deployment accepts: transactions
 in total, the longest path of dependent transactions, outputs per transaction
