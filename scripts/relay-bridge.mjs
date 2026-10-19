@@ -19,6 +19,8 @@
 //   GET  /pparams?relay=               cardano-cli query protocol-parameters
 //   GET  /utxo?relay=&address=…        cardano-cli query utxo, as JSON (1-20 addresses)
 //   GET  /mempool?relay=&tx=…          which of these tx ids (1-50) are in the relay's mempool
+//   GET  /mempool?relay=&k=            without tx ids: the mempool as the node's trace
+//                                      tells it, as a sketch of its k smallest tx ids
 //   POST /submit?relay=  {"cbor_hex"}  cardano-cli transaction submit
 //   GET  /events?relay=&since=&tx=…    the node's own mempool and block events (TRACE_FILE)
 //   POST /events?relay=  {"since", "tx_ids"}   the same, for up to 5,000 tx ids
@@ -282,6 +284,13 @@ export function bridge(cfg = config(), trace = null) {
         const args = addresses.flatMap((a) => ["--address", a]);
         return json(res, 200, await query(cfg, relayOf(cfg, url), ["utxo", ...args]));
       }
+      if (route === "GET /mempool" && !url.searchParams.has("tx")) {
+        const relay = relayOf(cfg, url);
+        if (!trace) throw new BridgeError(404, "this bridge does not read its node's trace");
+        const k = Number(url.searchParams.get("k") ?? SKETCH_K);
+        if (!Number.isInteger(k) || k < 1 || k > MAX_SKETCH_K) throw new BridgeError(400, `k must be 1 to ${MAX_SKETCH_K}`);
+        return json(res, 200, { relay, ...trace.sketch(k) });
+      }
       if (route === "GET /mempool") {
         const ids = url.searchParams.getAll("tx");
         if (!ids.length || ids.length > 50 || !ids.every((id) => /^[0-9a-f]{64}$/.test(id))) {
@@ -394,6 +403,13 @@ export const logged = (ns) => LOGGED.some((p) => ns.startsWith(p)) && !NOT_LOGGE
 const MAX_LINE_CHARS = 2_000;
 // /logs answers with at most this many lines; the next window starts after the last.
 const MAX_LOG_LINES = 1_000;
+// A mempool sketch: its k smallest tx ids, each cut to SKETCH_CHARS hex
+// characters. Tx ids are hashes, so the smallest are a uniform sample, and two
+// relays' sketches estimate how much their mempools overlap (to about 1/sqrt(k))
+// without either sending its whole mempool.
+const SKETCH_K = 2_048;
+const MAX_SKETCH_K = 50_000;
+const SKETCH_CHARS = 16;
 
 /** RFC 3339 with nanoseconds -> milliseconds since the epoch, to the microsecond. */
 export function traceMs(at) {
@@ -467,6 +483,12 @@ export class TraceIndex {
     // after its last change, each arriving EB's hits in the mempool and the
     // tx cache, the bytes of EB tx fetches, and the ledger's size.
     this.state = { mempool: null, bodyHits: [], arrivals: [], ledger: null };
+    // The txs in the node's mempool as its trace tells it: tx id -> when it
+    // was added, oldest first. A removal the trace missed would leave a tx
+    // here for good, so when the node says it holds fewer txs than this, the
+    // oldest go first.
+    this.pool = new Map();
+    this.firstMs = null; // the earliest trace time read, for what the pool can know
     // The LOGGED lines as written (cut to MAX_LINE_CHARS), oldest first, for /logs.
     this.lines = [];
     this.linesHead = 0;
@@ -517,6 +539,27 @@ export class TraceIndex {
     const after = (list) => (sinceMs == null ? list : list.filter((e) => e.at_ms >= sinceMs));
     const { mempool, bodyHits, arrivals, ledger } = this.state;
     return { reading: this.reading, mempool, body_hits: after(bodyHits), fetch_arrivals: after(arrivals), ledger };
+  }
+
+  /**
+   * The mempool as a sketch: {reading, txs (as the trace tells it), node_txs
+   * (as the node last said), at_ms (when it said so), since_ms (the earliest
+   * trace time read: a tx added before it is missing), k, bottom: the k
+   * smallest tx ids, cut, ascending}. With txs <= k the sketch is the whole
+   * mempool.
+   */
+  sketch(k) {
+    const bottom = [...this.pool.keys()].sort().slice(0, k).map((id) => id.slice(0, SKETCH_CHARS));
+    const { mempool } = this.state;
+    return {
+      reading: this.reading,
+      txs: this.pool.size,
+      node_txs: mempool?.txs ?? null,
+      at_ms: mempool?.at_ms ?? null,
+      since_ms: this.firstMs,
+      k,
+      bottom,
+    };
   }
 
   keep(list, entry) {
@@ -586,6 +629,7 @@ export class TraceIndex {
       return;
     }
     const base = { at: e.at, at_ms: traceMs(e.at) };
+    if (base.at_ms != null && (this.firstMs == null || base.at_ms < this.firstMs)) this.firstMs = base.at_ms;
     const d = e.data ?? {};
     const idOf = (tx) => {
       const id = tx?.txIdFull ?? tx?.txIdentity?.ledgerTxId;
@@ -593,10 +637,20 @@ export class TraceIndex {
       if (id && hash) this.remember(this.serialized, hash, id, this.max.hashes);
       return id;
     };
+    if (ns === "Mempool.AddedTx") {
+      const tx = idOf(d.tx);
+      if (tx) this.pool.set(tx, base.at_ms);
+    } else if (ns === "Mempool.RemoveTxs") {
+      for (const r of d.txs ?? []) this.pool.delete(idOf(r.tx));
+    }
     // Mempool events carry its size after them (when the node's tracer gives it).
     const size = d.mempoolSize;
     if (size && (ns === "Mempool.AddedTx" || ns === "Mempool.RemoveTxs")) {
       this.state.mempool = { at: e.at, at_ms: base.at_ms, txs: size.numTxs ?? null, bytes: size.bytes ?? null };
+      for (const id of this.pool.keys()) {
+        if (size.numTxs == null || this.pool.size <= size.numTxs) break;
+        this.pool.delete(id);
+      }
     }
     if (ns === "Consensus.LeiosKernel.BodyHits") {
       this.keep(this.state.bodyHits, {

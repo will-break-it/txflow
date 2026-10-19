@@ -440,3 +440,52 @@ test("a submit the node holds does not take a query's place", async () => {
     b.close();
   }
 });
+
+test("/mempool without tx ids sketches the mempool the trace tells, trimmed to what the node says it holds", async () => {
+  const index = new TraceIndex({ start: 0 });
+  const line = (at, ns, data) => JSON.stringify({ at, ns, data, sev: "Info", host: "relay" });
+  const id = (c) => c.repeat(64);
+  const added = (at, tx, numTxs) =>
+    index.ingest(line(at, "Mempool.AddedTx", { tx: { txIdFull: id(tx) }, mempoolSize: { numTxs, bytes: 100 * numTxs } }));
+  added("2026-10-14T07:20:00Z", "e", 1);
+  added("2026-10-14T07:20:01Z", "a", 2);
+  added("2026-10-14T07:20:02Z", "c", 3);
+  added("2026-10-14T07:20:03Z", "b", 4);
+  index.ingest(line("2026-10-14T07:20:04Z", "Mempool.RemoveTxs", {
+    txs: [{ tx: { txIdFull: id("c") }, err: { reason: ["AllInputsAreSpent"] } }],
+    mempoolSize: { numTxs: 3, bytes: 300 },
+  }));
+
+  const b = await start({}, index);
+  try {
+    const all = await (await fetch(`${b.base}/mempool?relay=frankfurt`)).json();
+    assert.deepEqual(all.bottom, ["a", "b", "e"].map((c) => c.repeat(16)));
+    assert.deepEqual([all.txs, all.node_txs, all.k], [3, 3, 2048]);
+    assert.equal(all.since_ms, Date.parse("2026-10-14T07:20:00Z"));
+    const two = await (await fetch(`${b.base}/mempool?relay=frankfurt&k=2`)).json();
+    assert.deepEqual(two.bottom, ["a".repeat(16), "b".repeat(16)]);
+    assert.equal(two.txs, 3);
+    assert.equal((await fetch(`${b.base}/mempool?relay=frankfurt&k=0`)).status, 400);
+    // With tx ids it still asks the node.
+    const asked = await (await fetch(`${b.base}/mempool?relay=frankfurt&tx=${"aaaa".repeat(16)}`)).json();
+    assert.deepEqual(asked.txs, { ["aaaa".repeat(16)]: true });
+  } finally {
+    b.close();
+  }
+
+  // A removal the trace missed: the node says it holds 2 txs, so the oldest go.
+  added("2026-10-14T07:20:05Z", "d", 2);
+  assert.deepEqual(index.sketch(10).bottom, ["b", "d"].map((c) => c.repeat(16)));
+  // A restarted node starts empty; its first add says so.
+  added("2026-10-14T07:20:06Z", "f", 1);
+  assert.deepEqual(index.sketch(10).bottom, ["f".repeat(16)]);
+});
+
+test("a bridge without the node's trace cannot sketch its mempool", async () => {
+  const b = await start();
+  try {
+    assert.equal((await fetch(`${b.base}/mempool?relay=frankfurt`)).status, 404);
+  } finally {
+    b.close();
+  }
+});
