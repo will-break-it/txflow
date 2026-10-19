@@ -3,7 +3,7 @@
   "name": "Musashi",
   "protocol": "Ouroboros Leios",
   "magic": 164,
-  "description": "The Leios test network. Relays named after their AWS regions' cities: Frankfurt, N. Virginia and Tokyo, and temporary ones that leave the site at their `until` time; the earlier ids europe, americas and asia still work in specs. Nodes listen for node-to-node on 3010 and serve node-to-client only on their local socket, reached over SSH. Both are open to allow-listed addresses only. Hosts are a snapshot of 2026-10-15 and change when an instance is stopped.",
+  "description": "The Leios test network. Relays named after their AWS regions' cities: Frankfurt, N. Virginia, Tokyo, Oregon, Sydney, São Paulo and Mumbai (a temporary relay can carry `until`, when it leaves the site); the earlier ids europe, americas and asia still work in specs. Nodes listen for node-to-node on 3010 and serve node-to-client only on their local socket, reached over SSH. Both are open to allow-listed addresses only. Hosts are a snapshot of 2026-10-19 and change when an instance is stopped.",
   "relays": [
     {
       "id": "frankfurt",
@@ -47,46 +47,42 @@
     {
       "id": "oregon",
       "label": "Oregon",
-      "host": "44.247.251.250",
+      "host": "52.43.127.102",
       "via": [
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010,
-      "until": "2026-10-16T12:13:00Z"
+      "n2n_port": 3010
     },
     {
       "id": "sydney",
       "label": "Sydney",
-      "host": "3.26.36.103",
+      "host": "3.104.1.40",
       "via": [
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010,
-      "until": "2026-10-16T12:13:00Z"
+      "n2n_port": 3010
     },
     {
       "id": "saopaulo",
       "label": "São Paulo",
-      "host": "15.228.188.83",
+      "host": "54.233.15.161",
       "via": [
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010,
-      "until": "2026-10-16T12:13:00Z"
+      "n2n_port": 3010
     },
     {
       "id": "mumbai",
       "label": "Mumbai",
-      "host": "52.66.107.224",
+      "host": "3.110.160.131",
       "via": [
         "n2c",
         "n2n"
       ],
-      "n2n_port": 3010,
-      "until": "2026-10-16T12:13:00Z"
+      "n2n_port": 3010
     }
   ],
   "explorer": {
