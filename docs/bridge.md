@@ -12,7 +12,7 @@ client ──▶ Cloudflare Tunnel or TLS proxy ──▶ txflow-bridge on 127.0
 
 Endpoints: `GET /relays`, and with `?relay=<id>` (an id in
 `networks/<network>.json`) `GET /tip`, `/pparams`, `/utxo`, `/mempool`,
-`POST /submit` and `GET|POST /events`.
+`/node`, `/logs`, `POST /submit` and `GET|POST /events`.
 To run one on your machine against forwarded sockets, see
 [`development.md`](development.md#a-relay-bridge-on-your-machine).
 
@@ -81,6 +81,20 @@ What the bridge remembers, all in memory (none of it on disk):
   the rotated files, so events from before that are gone. A client whose experiment spans
   a bridge restart falls back to polled times for the txs whose events it
   missed. Restart bridges between experiments, not during one.
+- **The txs in the node's mempool**, from the same events: added on
+  `Mempool.AddedTx`, gone on `Mempool.RemoveTxs`. When the node says it holds
+  fewer txs than that (a removal the trace missed, or a restarted node), the
+  oldest go first.
+
+**Mempool sketches.** `GET /mempool?relay=<id>` without `tx=` answers from
+that list: `txs` (as the trace tells it), `node_txs` (as the node last said),
+`since_ms` (the earliest trace time read; a tx added before it is missing until
+it leaves) and `bottom`, the `k` smallest tx ids (`&k=`, 2,048 by default, at
+most 50,000), each cut to 16 hex characters. Tx ids are hashes, so the
+smallest are a uniform sample, and two relays' sketches estimate how much
+their mempools overlap, to about 1/sqrt(k), without either sending its whole
+mempool. With `txs` up to `k` the sketch is the whole mempool. A bridge
+without a trace answers 404.
 
 On a gateway instead (Debian or Ubuntu, from a checkout; `CARDANO_CLI` is the
 Linux build from the relays' Leios release):
