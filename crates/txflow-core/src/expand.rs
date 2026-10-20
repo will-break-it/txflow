@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::cost::Covering;
 use crate::derive;
 use crate::error::{Error, Result};
 use crate::expr;
@@ -35,6 +36,15 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         .as_deref()
         .map(metadata::parse_color)
         .transpose()?;
+    let spec_cost = spec
+        .cost
+        .as_ref()
+        .map(|c| c.resolve(&spec.params))
+        .transpose()
+        .map_err(|e| match e {
+            Error::Spec(message) => Error::Spec(format!("spec: {message}")),
+            other => other,
+        })?;
     let mut ids = BTreeSet::new();
     let mut namespaces = BTreeSet::new();
     let mut total_nodes: u64 = 0;
@@ -77,6 +87,13 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                     Some(metadata::parse_color(color).map_err(|e| in_pattern(&instance.id, e))?)
                 }
                 None => spec_color.clone(),
+            },
+            cost: match &instance.cost {
+                Some(cost) => Some(
+                    cost.resolve(&spec.params)
+                        .map_err(|e| in_pattern(&instance.id, e))?,
+                ),
+                None => spec_cost.clone(),
             },
         };
         let mut with = instance.with.clone();
@@ -157,6 +174,7 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                     .collect();
                 tx.metadata = tag.metadata.clone();
                 tx.color = tag.color.clone();
+                tx.cost = tag.cost.as_ref().and_then(|c| c.for_labels(&tx.labels));
                 insert_unique(&mut txs, format!("{prefix}{name}"), tx)?;
             }
         }
@@ -179,6 +197,9 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
             Some(color) => Some(metadata::parse_color(color).map_err(in_tx)?),
             None => spec_color.clone(),
         };
+        if tx.cost.is_none() {
+            tx.cost = spec_cost.as_ref().and_then(|c| c.for_labels(&tx.labels));
+        }
         insert_unique(&mut txs, name.clone(), tx)?;
     }
 
@@ -209,10 +230,11 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
     Ok(ir)
 }
 
-/// Metadata and colour a pattern instance puts on every tx it emits.
+/// Metadata, colour and script cost a pattern instance puts on the txs it emits.
 struct Tag {
     metadata: Metadata,
     color: Option<String>,
+    cost: Option<Covering>,
 }
 
 /// Name the pattern instance an error came from.

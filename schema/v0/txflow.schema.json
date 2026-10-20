@@ -10,6 +10,88 @@
       "pattern": "^#?[0-9a-fA-F]{6}$",
       "type": "string"
     },
+    "cost": {
+      "additionalProperties": false,
+      "description": "How much Plutus execution the tx carries, not which script: materialise adds a run of txflow's burner script that uses as much as possible without going over. A dimension left out is kept as low as the script allows. A share keeps the spec network-free.",
+      "minProperties": 1,
+      "properties": {
+        "cpu": {
+          "$ref": "#/$defs/cost_value",
+          "description": "CPU steps: a share of the network's per-tx step limit (maxTxExecutionUnits.steps), or a number of steps."
+        },
+        "mem": {
+          "$ref": "#/$defs/cost_value",
+          "description": "Memory units: a share of the network's per-tx memory limit (maxTxExecutionUnits.memory), or a number of units."
+        }
+      },
+      "type": "object"
+    },
+    "cost_covering": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "cpu"
+          ]
+        },
+        {
+          "required": [
+            "mem"
+          ]
+        }
+      ],
+      "description": "A script cost (see `cost`) for many txs. Values may use params.",
+      "properties": {
+        "cpu": {
+          "$ref": "#/$defs/cost_value_text",
+          "description": "CPU steps: a share of the network's per-tx step limit (maxTxExecutionUnits.steps), or a number of steps."
+        },
+        "mem": {
+          "$ref": "#/$defs/cost_value_text",
+          "description": "Memory units: a share of the network's per-tx memory limit (maxTxExecutionUnits.memory), or a number of units."
+        },
+        "select": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "description": "Only txs with this label carry the cost.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "label"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "cost_value": {
+      "oneOf": [
+        {
+          "description": "A share of the per-tx limit, `25%` or `12.5%`, above 0.",
+          "pattern": "^(100(\\.00?)?|[0-9]{1,2}(\\.[0-9]{1,2})?)%$",
+          "type": "string"
+        },
+        {
+          "description": "Execution units.",
+          "minimum": 1,
+          "type": "integer"
+        }
+      ]
+    },
+    "cost_value_text": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/cost_value"
+        },
+        {
+          "description": "`{{ expression }}%` for a share in whole percent, or `{{ expression }}` for units, over `params`.",
+          "pattern": "^\\s*\\{\\{[^{}]*\\}\\}\\s*%?\\s*$",
+          "type": "string"
+        }
+      ]
+    },
     "metadata": {
       "additionalProperties": {
         "$ref": "#/$defs/metadatum"
@@ -124,6 +206,10 @@
           "$ref": "#/$defs/color",
           "description": "Colour tag on every tx this instance emits, over the spec's."
         },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -201,6 +287,10 @@
         "color": {
           "$ref": "#/$defs/color",
           "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
         },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
@@ -294,6 +384,10 @@
           "$ref": "#/$defs/color",
           "description": "Colour tag on every tx this instance emits, over the spec's."
         },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -371,6 +465,10 @@
         "color": {
           "$ref": "#/$defs/color",
           "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
         },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
@@ -470,6 +568,10 @@
           "$ref": "#/$defs/color",
           "description": "Colour tag on every tx this instance emits, over the spec's."
         },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -548,6 +650,10 @@
           "$ref": "#/$defs/color",
           "description": "Colour tag on every tx this instance emits, over the spec's."
         },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
+        },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
           "oneOf": [
@@ -625,6 +731,10 @@
         "color": {
           "$ref": "#/$defs/color",
           "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
         },
         "count": {
           "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
@@ -874,6 +984,10 @@
           "$ref": "#/$defs/color",
           "description": "Colour tag on this tx, over the spec's."
         },
+        "cost": {
+          "$ref": "#/$defs/cost",
+          "description": "Script cost of this tx, instead of the spec's."
+        },
         "inputs": {
           "description": "Outputs spent: a source name, or `tx.N` for output N of a tx.",
           "items": {
@@ -928,6 +1042,10 @@
     "color": {
       "$ref": "#/$defs/color",
       "description": "Colour tag on every tx, unless a pattern or tx sets its own."
+    },
+    "cost": {
+      "$ref": "#/$defs/cost_covering",
+      "description": "Script cost of every tx (or of those with `select.label`), unless a pattern or tx sets its own."
     },
     "expect": {
       "description": "Expected outcomes. Carried, not yet interpreted."

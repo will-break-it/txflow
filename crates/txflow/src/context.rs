@@ -82,7 +82,8 @@ impl From<NetworkName> for pallas_addresses::Network {
 
 /// The protocol parameters materialise uses. Field aliases accept the names
 /// `cardano-cli query protocol-parameters` prints; other fields are ignored.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// The script fields are needed only by txs with a script cost.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct ProtocolParams {
     #[serde(alias = "txFeePerByte")]
     pub min_fee_a: u64,
@@ -92,6 +93,128 @@ pub struct ProtocolParams {
     pub max_tx_size: u64,
     #[serde(alias = "utxoCostPerByte")]
     pub coins_per_utxo_byte: u64,
+    /// Collateral as a percentage of the fee.
+    #[serde(
+        default,
+        alias = "collateralPercentage",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub collateral_percentage: Option<u64>,
+    /// Lovelace per memory unit and per CPU step.
+    #[serde(
+        default,
+        alias = "executionUnitPrices",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub execution_unit_prices: Option<ExecutionPrices>,
+    /// The most execution one tx may use.
+    #[serde(
+        default,
+        alias = "maxTxExecutionUnits",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_tx_execution_units: Option<ExecutionUnits>,
+    /// Plutus cost models; only Plutus V3 is read.
+    #[serde(default, alias = "costModels", skip_serializing_if = "Option::is_none")]
+    pub cost_models: Option<CostModels>,
+    /// Picks the builtin semantics scripts are evaluated with.
+    #[serde(
+        default,
+        alias = "protocolVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub protocol_version: Option<ProtocolVersion>,
+}
+
+/// Execution prices as exact fractions, as the ledger holds them.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ExecutionPrices {
+    #[serde(alias = "priceMemory")]
+    pub price_memory: Rational,
+    #[serde(alias = "priceSteps")]
+    pub price_steps: Rational,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct ExecutionUnits {
+    pub memory: u64,
+    pub steps: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CostModels {
+    #[serde(default, alias = "PlutusV3", skip_serializing_if = "Option::is_none")]
+    pub plutus_v3: Option<Vec<i64>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct ProtocolVersion {
+    pub major: u16,
+    #[serde(default)]
+    pub minor: u16,
+}
+
+/// A non-negative fraction. Read from a decimal number (`0.0577`, `7.21e-05`,
+/// taken exactly as written) or `{ numerator, denominator }`; written as the latter.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rational {
+    pub numerator: u64,
+    pub denominator: u64,
+}
+
+impl<'de> Deserialize<'de> for Rational {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(f64),
+            Fraction { numerator: u64, denominator: u64 },
+        }
+        match Raw::deserialize(d)? {
+            Raw::Fraction {
+                numerator,
+                denominator,
+            } if denominator > 0 => Ok(Rational {
+                numerator,
+                denominator,
+            }),
+            Raw::Fraction { .. } => Err(serde::de::Error::custom("denominator is zero")),
+            Raw::Number(value) => Rational::from_decimal(value).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl Rational {
+    /// The fraction a decimal number stands for: `7.21e-05` is 721/10000000.
+    /// Rust prints the shortest decimal that reads back as the same `f64`,
+    /// which is the number as `cardano-cli` wrote it.
+    pub fn from_decimal(value: f64) -> std::result::Result<Rational, String> {
+        if !value.is_finite() || value < 0.0 {
+            return Err(format!("{value} is not a price"));
+        }
+        let text = format!("{value}");
+        let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
+        let digits = format!("{whole}{fraction}");
+        let numerator: u64 = digits
+            .parse()
+            .map_err(|_| format!("{value} has too many digits"))?;
+        let denominator = 10u64
+            .checked_pow(fraction.len() as u32)
+            .ok_or_else(|| format!("{value} has too many decimals"))?;
+        let divisor = gcd(numerator, denominator);
+        Ok(Rational {
+            numerator: numerator / divisor,
+            denominator: denominator / divisor,
+        })
+    }
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        a.max(1)
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 /// A UTxO offered for funding the experiment.

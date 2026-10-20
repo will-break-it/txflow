@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cost::CostSpec;
 use crate::error::Result;
 use crate::ir::{Source, Tx};
 use crate::metadata::Metadata;
@@ -32,6 +33,10 @@ pub struct ExperimentSpec {
     /// Colour tag on every tx, unless a pattern instance or tx sets its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Script cost on every tx (or every tx with `select.label`), unless a
+    /// pattern instance or tx sets its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub patterns: Vec<PatternInstance>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -67,6 +72,9 @@ pub struct PatternInstance {
     /// Colour tag on every tx this instance emits, over the spec's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Script cost on the txs this instance emits, replacing the spec's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostSpec>,
 }
 
 impl ExperimentSpec {

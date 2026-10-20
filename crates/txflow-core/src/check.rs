@@ -178,6 +178,7 @@ fn summarise(spec: &ExperimentSpec, ir: &Ir, plan: Option<&Plan>) -> Summary {
         ));
     }
     describe_tags(ir, &mut description);
+    describe_costs(ir, &mut description);
     if let Some(plan) = plan {
         describe_plan(plan, &mut description);
     }
@@ -256,6 +257,33 @@ fn describe_tags(ir: &Ir, description: &mut Vec<String>) {
             )
         ));
     }
+}
+
+/// Which script costs the transactions carry, with counts.
+fn describe_costs(ir: &Ir, description: &mut Vec<String>) {
+    let mut costs: BTreeMap<String, usize> = BTreeMap::new();
+    for cost in ir.txs.values().filter_map(|tx| tx.cost.as_ref()) {
+        let text = [("cpu", cost.cpu), ("mem", cost.mem)]
+            .iter()
+            .filter_map(|(name, value)| value.map(|v| format!("{name} {v}")))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        *costs.entry(text).or_default() += 1;
+    }
+    if costs.is_empty() {
+        return;
+    }
+    let total: usize = costs.values().sum();
+    description.push(format!(
+        "{total} transaction{} run{} a script: {}.",
+        plural(total),
+        if total == 1 { "s" } else { "" },
+        costs
+            .into_iter()
+            .map(|(cost, n)| format!("{cost} on {n} tx{}", plural(n)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
 }
 
 /// One sentence per target, in the order targets are first used.

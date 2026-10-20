@@ -5,6 +5,13 @@
 //! byte-identical transactions. Funding transactions spend the offered UTxOs
 //! and create one output per IR source at the run address; experiment
 //! transactions follow in topological order. Nothing is submitted.
+//!
+//! A tx with a script cost also spends a small output locked by the burner
+//! script ([`crate::burner`]), its "fuel", with a redeemer that makes the
+//! burner use that cost. Funding creates the fuel outputs and one collateral
+//! output the script txs share; none of them is in the IR, so they add no
+//! conflicts. Every script run is evaluated before the manifest is written,
+//! and its measured cost is what the tx declares.
 
 use std::collections::BTreeMap;
 
@@ -14,13 +21,16 @@ use pallas_addresses::{
 use pallas_crypto::hash::{Hash, Hasher};
 use pallas_crypto::key::ed25519::SecretKey;
 use pallas_txbuilder::{BuildConway, Input, Output, StagingTransaction};
+use pallas_txbuilder::{Bytes, Bytes32, ExUnits, ScriptKind};
 use serde::Serialize;
 
+use crate::burner::{self, Calibration, Knobs, Units};
 use crate::context::{ChainContext, NetworkName, OfferedUtxo, ProtocolParams, SecretKeyBytes};
 use crate::derive;
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Ir, Tx};
 use crate::metadata::{auxiliary_data, Metadata};
+use txflow_core::cost::Cost;
 
 /// CIP-20 transaction message label, used to attribute txs on chain.
 pub const METADATA_LABEL: u64 = txflow_core::metadata::MESSAGE_LABEL;
@@ -78,7 +88,45 @@ pub struct Manifest {
     pub run_address: String,
     /// Offered UTxOs the funding transactions spend, as `<tx id>#<index>`.
     pub funding_utxos: Vec<String>,
+    /// The burner script, when any tx has a script cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burner: Option<BurnerInfo>,
     pub txs: Vec<ManifestTx>,
+}
+
+/// The script txs with a cost run, and the collateral they share.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct BurnerInfo {
+    /// blake2b-224 of the script, hex.
+    pub script_hash: String,
+    /// Enterprise address of the script, where fuel outputs are locked.
+    pub address: String,
+    /// The collateral output every script tx names, as `<tx id>#<index>`.
+    pub collateral: String,
+    /// The least a burner run costs under this cost model.
+    pub floor: Units,
+}
+
+/// What a tx's script run was asked for and what it used.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct ManifestCost {
+    /// The cost as the spec wrote it.
+    pub requested: Cost,
+    /// The requested cost in units against this network's per-tx limit;
+    /// `None` where the spec left a dimension to the burner.
+    pub target: TargetUnits,
+    /// What the run used when evaluated: what the tx declares and pays for.
+    pub measured: Units,
+    /// The redeemer that makes the burner use it.
+    pub knobs: Knobs,
+}
+
+#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+pub struct TargetUnits {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem: Option<u64>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -109,6 +157,12 @@ pub struct ManifestTx {
     /// Conflict sets among its ancestors: it is invalid if an ancestor loses.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub orphan_on: Vec<String>,
+    /// Script txs: the collateral input, as `<tx id>#<index>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collateral: Option<String>,
+    /// Script txs: the cost asked for and used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ManifestCost>,
     pub cbor_hex: String,
 }
 
@@ -238,8 +292,33 @@ pub fn cbor_skip(bytes: &[u8], at: usize) -> Option<usize> {
 pub(crate) struct Built {
     pub(crate) tx_id: [u8; 32],
     pub(crate) bytes: Vec<u8>,
+    /// The same tx in the Conway format, which the script evaluator reads.
+    pub(crate) conway_bytes: Vec<u8>,
     pub(crate) fee: u64,
     pub(crate) outputs: Vec<u64>,
+}
+
+/// The script part of a tx with a script cost.
+pub(crate) struct ScriptRun<'a> {
+    /// The burner-locked input; it is also in the tx's inputs.
+    pub(crate) fuel: Input,
+    pub(crate) collateral: Input,
+    pub(crate) knobs: Knobs,
+    /// What the run uses: declared in the redeemer and paid for.
+    pub(crate) units: Units,
+    pub(crate) cost_model: &'a [i64],
+    /// Lovelace for `units` at the execution prices.
+    pub(crate) script_fee: u64,
+}
+
+/// What script txs need from the context, read once.
+struct ScriptSetup<'a> {
+    calibration: Calibration,
+    cost_model: &'a [i64],
+    protocol_major: u16,
+    limit: crate::context::ExecutionUnits,
+    prices: crate::context::ExecutionPrices,
+    address: Address,
 }
 
 /// Build and sign every transaction of `ir` against `context`.
@@ -279,18 +358,47 @@ pub fn materialise(
     // Reference text (`source` or `tx.N`) → spendable input and its value.
     let mut utxos: BTreeMap<String, (Input, u64)> = BTreeMap::new();
 
+    // --- Script setup -----------------------------------------------------
+    let script_txs: Vec<&String> = derived
+        .topo_order
+        .iter()
+        .filter(|name| ir.txs.get(*name).is_some_and(|tx| tx.cost.is_some()))
+        .collect();
+    let setup = if script_txs.is_empty() {
+        None
+    } else {
+        Some(script_setup(pp, network)?)
+    };
+
     // --- Funding ----------------------------------------------------------
-    let sources: Vec<(&String, u64)> = ir.sources.iter().map(|(n, s)| (n, s.lovelace)).collect();
-    for (name, lovelace) in &sources {
-        if *lovelace < min_lovelace {
+    for (name, source) in &ir.sources {
+        if source.lovelace < min_lovelace {
             return Err(Error::Materialise(format!(
-                "source `{name}` holds {lovelace} lovelace, below the minimum {min_lovelace}"
+                "source `{name}` holds {} lovelace, below the minimum {min_lovelace}",
+                source.lovelace
             )));
+        }
+    }
+    // IR sources by name, then the collateral and each script tx's fuel.
+    let mut sources: Vec<(String, u64, Address)> = ir
+        .sources
+        .iter()
+        .map(|(n, s)| (n.clone(), s.lovelace, run_address.clone()))
+        .collect();
+    if let Some(setup) = &setup {
+        sources.push((
+            COLLATERAL.to_string(),
+            collateral_lovelace(pp, setup)?.max(min_lovelace),
+            run_address.clone(),
+        ));
+        let fuel = min_for(&setup.address, pp)?;
+        for name in &script_txs {
+            sources.push((fuel_name(name), fuel, setup.address.clone()));
         }
     }
     let total_sources = sources
         .iter()
-        .try_fold(0u64, |acc, (_, l)| acc.checked_add(*l))
+        .try_fold(0u64, |acc, (_, l, _)| acc.checked_add(*l))
         .ok_or_else(|| Error::Materialise("source total overflows".to_string()))?;
     let (mut selected, chunk_sizes) = plan_funding(
         &context.offered,
@@ -310,8 +418,8 @@ pub fn materialise(
         &funding_address,
         context.magic,
     );
-    let mut chunks: Vec<&[(&String, u64)]> = Vec::new();
-    let mut rest: &[(&String, u64)] = &sources;
+    let mut chunks: Vec<&[(String, u64, Address)]> = Vec::new();
+    let mut rest: &[(String, u64, Address)] = &sources;
     for size in &chunk_sizes {
         let (chunk, tail) = rest.split_at((*size).min(rest.len()));
         chunks.push(chunk);
@@ -333,8 +441,8 @@ pub fn materialise(
         let index = txs.len();
         let mut planned: Vec<PlannedOutput> = chunk
             .iter()
-            .map(|(_, lovelace)| PlannedOutput {
-                address: run_address.clone(),
+            .map(|(_, lovelace, address)| PlannedOutput {
+                address: address.clone(),
                 lovelace: Some(*lovelace),
             })
             .collect();
@@ -358,8 +466,8 @@ pub fn materialise(
         )
         .map_err(|e| in_tx(&format!("fund/{k}"), e))?;
         let tx_hash = Hash::new(built.tx_id);
-        for (i, (name, lovelace)) in chunk.iter().enumerate() {
-            utxos.insert((*name).clone(), (Input::new(tx_hash, i as u64), *lovelace));
+        for (i, (name, lovelace, _)) in chunk.iter().enumerate() {
+            utxos.insert(name.clone(), (Input::new(tx_hash, i as u64), *lovelace));
         }
         let change_index = chunk.len();
         let change = built
@@ -377,7 +485,7 @@ pub fn materialise(
             vec![],
             vec![],
         );
-        entry.sources = chunk.iter().map(|(name, _)| (*name).clone()).collect();
+        entry.sources = chunk.iter().map(|(name, _, _)| name.clone()).collect();
         txs.push(entry);
         carry = vec![(Input::new(tx_hash, change_index as u64), change)];
         carry_names = vec![ResolvedInput {
@@ -394,7 +502,7 @@ pub fn materialise(
             .get(name)
             .ok_or_else(|| Error::Graph(format!("missing tx `{name}`")))?;
         let index = txs.len();
-        let inputs = resolve_all(&utxos, &tx.inputs)?;
+        let mut inputs = resolve_all(&utxos, &tx.inputs)?;
         let reference_inputs = resolve_all(&utxos, &tx.reference_inputs)?;
         let refs: Vec<Input> = reference_inputs
             .iter()
@@ -419,7 +527,36 @@ pub fn materialise(
                 lovelace,
             });
         }
-        let built = build_signed(
+        let mut input_refs = tx.inputs.clone();
+        let run = match (&tx.cost, &setup) {
+            (Some(cost), Some(setup)) => {
+                let (fuel, fuel_lovelace) = utxos
+                    .get(&fuel_name(name))
+                    .cloned()
+                    .ok_or_else(|| Error::Materialise(format!("no fuel for `{name}`")))?;
+                let collateral = utxos
+                    .get(COLLATERAL)
+                    .map(|(input, _)| input.clone())
+                    .ok_or_else(|| Error::Materialise("no collateral output".to_string()))?;
+                inputs.push((fuel.clone(), fuel_lovelace));
+                input_refs.push(fuel_name(name));
+                let (target, knobs, units) = plan_cost(cost, setup).map_err(|e| in_tx(name, e))?;
+                Some((
+                    *cost,
+                    target,
+                    ScriptRun {
+                        fuel,
+                        collateral,
+                        knobs,
+                        units,
+                        cost_model: setup.cost_model,
+                        script_fee: script_fee(&setup.prices, units)?,
+                    },
+                ))
+            }
+            _ => None,
+        };
+        let built = build_signed_with(
             &inputs,
             &refs,
             &planned,
@@ -427,8 +564,47 @@ pub fn materialise(
             &run_key,
             pp,
             format,
+            run.as_ref().map(|(_, _, run)| run),
         )
         .map_err(|e| in_tx(name, e))?;
+        let mut cost_entry = None;
+        let mut collateral_entry = None;
+        if let (Some((requested, target, run)), Some(setup)) = (&run, &setup) {
+            // Every input the evaluator needs, with the address it sits at.
+            let mut resolved_inputs: Vec<(Input, u64, &Address)> = Vec::new();
+            for (input, lovelace) in inputs.iter().chain(reference_inputs.iter()) {
+                let address = if *input == run.fuel {
+                    &setup.address
+                } else {
+                    &run_address
+                };
+                resolved_inputs.push((input.clone(), *lovelace, address));
+            }
+            let collateral_lovelace = utxos.get(COLLATERAL).map(|(_, l)| *l).unwrap_or(0);
+            resolved_inputs.push((run.collateral.clone(), collateral_lovelace, &run_address));
+            let measured = measure(&built.conway_bytes, &resolved_inputs, setup)
+                .map_err(|e| in_tx(name, e))?;
+            if measured != run.units {
+                return Err(in_tx(
+                    name,
+                    Error::Materialise(format!(
+                        "the burner used {measured:?}, not the {:?} it was built for",
+                        run.units
+                    )),
+                ));
+            }
+            cost_entry = Some(ManifestCost {
+                requested: *requested,
+                target: *target,
+                measured,
+                knobs: run.knobs,
+            });
+            collateral_entry = Some(format!(
+                "{}#{}",
+                hex::encode(run.collateral.tx_hash.0),
+                run.collateral.txo_index
+            ));
+        }
         let tx_hash = Hash::new(built.tx_id);
         for (i, lovelace) in built.outputs.iter().enumerate() {
             utxos.insert(
@@ -441,10 +617,12 @@ pub fn materialise(
             name,
             TxKind::Experiment,
             &built,
-            resolved(&tx.inputs, &inputs),
+            resolved(&input_refs, &inputs),
             resolved(&tx.reference_inputs, &reference_inputs),
             tx.labels.clone(),
         );
+        entry.collateral = collateral_entry;
+        entry.cost = cost_entry;
         entry.conflict_sets = member_of
             .get(name.as_str())
             .map(|sets| sets.iter().cloned().collect())
@@ -472,8 +650,189 @@ pub fn materialise(
         },
         run_address: bech32(&run_address)?,
         funding_utxos: selected.iter().map(utxo_text).collect(),
+        burner: match &setup {
+            Some(setup) => Some(BurnerInfo {
+                script_hash: hex::encode(burner::script_hash()),
+                address: bech32(&setup.address)?,
+                collateral: utxos
+                    .get(COLLATERAL)
+                    .map(|(input, _)| {
+                        format!("{}#{}", hex::encode(input.tx_hash.0), input.txo_index)
+                    })
+                    .unwrap_or_default(),
+                floor: setup.calibration.floor(),
+            }),
+            None => None,
+        },
         txs,
     })
+}
+
+/// Name of the collateral output in funding. `:` cannot appear in IR names.
+const COLLATERAL: &str = ":collateral";
+
+/// Name of a script tx's fuel output in funding.
+fn fuel_name(tx: &str) -> String {
+    format!("{tx}:fuel")
+}
+
+/// Read what script txs need from the protocol parameters.
+fn script_setup(pp: &ProtocolParams, network: Network) -> Result<ScriptSetup<'_>> {
+    let missing = |field: &str| {
+        Error::Context(format!(
+            "txs with a script cost need `{field}` in the protocol parameters \
+             (`cardano-cli query protocol-parameters` prints it)"
+        ))
+    };
+    let cost_model = pp
+        .cost_models
+        .as_ref()
+        .and_then(|c| c.plutus_v3.as_deref())
+        .ok_or_else(|| missing("costModels.PlutusV3"))?;
+    let protocol_major = pp
+        .protocol_version
+        .map(|v| v.major)
+        .ok_or_else(|| missing("protocolVersion"))?;
+    let limit = pp
+        .max_tx_execution_units
+        .ok_or_else(|| missing("maxTxExecutionUnits"))?;
+    let prices = pp
+        .execution_unit_prices
+        .clone()
+        .ok_or_else(|| missing("executionUnitPrices"))?;
+    pp.collateral_percentage
+        .ok_or_else(|| missing("collateralPercentage"))?;
+    Ok(ScriptSetup {
+        calibration: Calibration::new(cost_model, protocol_major)?,
+        cost_model,
+        protocol_major,
+        limit,
+        prices,
+        address: Address::Shelley(ShelleyAddress::new(
+            network,
+            ShelleyPaymentPart::script_hash(Hash::new(burner::script_hash())),
+            ShelleyDelegationPart::Null,
+        )),
+    })
+}
+
+/// The cost in units against the per-tx limit, the burner's knobs for it,
+/// and what those knobs use.
+fn plan_cost(cost: &Cost, setup: &ScriptSetup) -> Result<(TargetUnits, Knobs, Units)> {
+    let target = TargetUnits {
+        steps: cost.cpu.map(|v| v.units(setup.limit.steps)),
+        mem: cost.mem.map(|v| v.units(setup.limit.memory)),
+    };
+    for (what, asked, limit) in [
+        ("CPU steps", target.steps, setup.limit.steps),
+        ("memory units", target.mem, setup.limit.memory),
+    ] {
+        if let Some(asked) = asked {
+            if asked > limit {
+                return Err(Error::Materialise(format!(
+                    "script cost of {asked} {what} is above the per-tx limit of {limit}"
+                )));
+            }
+        }
+    }
+    let knobs = setup
+        .calibration
+        .solve(target.steps, target.mem)
+        .map_err(|e| match e {
+            Error::Materialise(message) => Error::Materialise(format!("script cost: {message}")),
+            other => other,
+        })?;
+    let units = setup.calibration.predict(knobs);
+    if units.steps > setup.limit.steps || units.mem > setup.limit.memory {
+        return Err(Error::Materialise(format!(
+            "script cost: the burner needs {units:?}, above the per-tx limit"
+        )));
+    }
+    Ok((target, knobs, units))
+}
+
+/// `ceil(price_memory * mem + price_steps * steps)`, as the ledger computes it.
+fn script_fee(prices: &crate::context::ExecutionPrices, units: Units) -> Result<u64> {
+    let (m, s) = (prices.price_memory, prices.price_steps);
+    let numerator = u128::from(m.numerator) * u128::from(units.mem) * u128::from(s.denominator)
+        + u128::from(s.numerator) * u128::from(units.steps) * u128::from(m.denominator);
+    let denominator = u128::from(m.denominator) * u128::from(s.denominator);
+    u64::try_from(numerator.div_ceil(denominator))
+        .map_err(|_| Error::Materialise("script fee overflows".to_string()))
+}
+
+/// Enough collateral for any tx: the fee of a maximum-size tx using the
+/// whole per-tx execution limit, times the collateral percentage.
+fn collateral_lovelace(pp: &ProtocolParams, setup: &ScriptSetup) -> Result<u64> {
+    let percentage = pp.collateral_percentage.unwrap_or(150);
+    let most = max_fee(pp)?
+        .checked_add(script_fee(
+            &setup.prices,
+            Units {
+                steps: setup.limit.steps,
+                mem: setup.limit.memory,
+            },
+        )?)
+        .ok_or_else(|| Error::Materialise("collateral overflows".to_string()))?;
+    let needed = u128::from(most) * u128::from(percentage);
+    u64::try_from(needed.div_ceil(100))
+        .map_err(|_| Error::Materialise("collateral overflows".to_string()))
+}
+
+/// Evaluate the tx's script run with the Plutus evaluator and return what it used.
+fn measure(conway: &[u8], inputs: &[(Input, u64, &Address)], setup: &ScriptSetup) -> Result<Units> {
+    let utxos: Vec<(Vec<u8>, Vec<u8>)> = inputs
+        .iter()
+        .map(|(input, lovelace, address)| {
+            let mut key = vec![0x82, 0x58, 0x20];
+            key.extend_from_slice(&input.tx_hash.0);
+            burner::cbor_uint(&mut key, 0, input.txo_index);
+            let address = address.to_vec();
+            let mut value = vec![0xa2, 0x00];
+            burner::cbor_uint(&mut value, 2, address.len() as u64);
+            value.extend_from_slice(&address);
+            value.push(0x01);
+            burner::cbor_uint(&mut value, 0, *lovelace);
+            (key, value)
+        })
+        .collect();
+    // `{2: [costs]}`: the Plutus V3 cost model.
+    let mut cost_models = vec![0xa1, 0x02];
+    burner::cbor_uint(&mut cost_models, 4, setup.cost_model.len() as u64);
+    for cost in setup.cost_model {
+        if *cost >= 0 {
+            burner::cbor_uint(&mut cost_models, 0, *cost as u64);
+        } else {
+            burner::cbor_uint(&mut cost_models, 1, (-1 - *cost) as u64);
+        }
+    }
+    let results = uplc::tx::eval_phase_two_raw_with_protocol(
+        conway,
+        &utxos,
+        Some(&cost_models),
+        (setup.limit.steps, setup.limit.memory),
+        (0, 0, 1000),
+        setup.protocol_major,
+        false,
+        |_| (),
+    )
+    .map_err(|e| Error::Materialise(format!("script evaluation: {e}")))?;
+    match results.as_slice() {
+        [(_, result)] => {
+            result
+                .result()
+                .map_err(|e| Error::Materialise(format!("the burner failed: {e}")))?;
+            let used = result.cost();
+            Ok(Units {
+                steps: u64::try_from(used.cpu).unwrap_or(0),
+                mem: u64::try_from(used.mem).unwrap_or(0),
+            })
+        }
+        other => Err(Error::Materialise(format!(
+            "expected one script run, evaluated {}",
+            other.len()
+        ))),
+    }
 }
 
 /// The run key that owns every source and experiment output: blake2b256 over
@@ -702,6 +1061,19 @@ fn pparams_hash(pp: &ProtocolParams) -> String {
     ] {
         hasher.input(&value.to_be_bytes());
     }
+    // Script parameters only when present, so a context without them hashes
+    // as it did before they were read.
+    let script = (
+        &pp.collateral_percentage,
+        &pp.execution_unit_prices,
+        &pp.max_tx_execution_units,
+        &pp.cost_models,
+        &pp.protocol_version,
+    );
+    if script != (&None, &None, &None, &None, &None) {
+        let json = serde_json::to_vec(&script).unwrap_or_default();
+        hasher.input(&json);
+    }
     format!("blake2b256:{}", hex::encode(hasher.finalize()))
 }
 
@@ -723,6 +1095,32 @@ pub(crate) fn build_signed(
     key: &SecretKey,
     pp: &ProtocolParams,
     format: TxFormat,
+) -> Result<Built> {
+    build_signed_with(
+        inputs,
+        reference_inputs,
+        planned,
+        metadata,
+        key,
+        pp,
+        format,
+        None,
+    )
+}
+
+/// [`build_signed`], with a script run when `script` is given: the burner as
+/// a witness, the redeemer on the fuel input, the collateral, the script data
+/// hash, and the script's execution fee on top of the size fee.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_signed_with(
+    inputs: &[(Input, u64)],
+    reference_inputs: &[Input],
+    planned: &[PlannedOutput],
+    metadata: &[u8],
+    key: &SecretKey,
+    pp: &ProtocolParams,
+    format: TxFormat,
+    script: Option<&ScriptRun>,
 ) -> Result<Built> {
     let min_change = match planned.iter().find(|o| o.lovelace.is_none()) {
         Some(change) => min_for(&change.address, pp)?,
@@ -771,7 +1169,21 @@ pub(crate) fn build_signed(
             amounts.push(lovelace);
             staging = staging.output(Output::new(output.address.clone(), lovelace));
         }
-        let staging = staging.fee(fee).add_auxiliary_data(metadata.to_vec());
+        let mut staging = staging.fee(fee).add_auxiliary_data(metadata.to_vec());
+        if let Some(run) = script {
+            staging = staging
+                .collateral_input(run.collateral.clone())
+                .script(ScriptKind::PlutusV3, burner::script())
+                .add_spend_redeemer(
+                    run.fuel.clone(),
+                    run.knobs.redeemer(),
+                    Some(ExUnits {
+                        mem: run.units.mem,
+                        steps: run.units.steps,
+                    }),
+                )
+                .add_language(ScriptKind::PlutusV3, run.cost_model.to_vec());
+        }
         // Pallas drops metadata it cannot decode without an error, and the
         // metadata is what keeps the members of a conflict set distinct.
         if staging.auxiliary_data.is_none() {
@@ -779,19 +1191,28 @@ pub(crate) fn build_signed(
                 "the attribution metadata does not decode".to_string(),
             ));
         }
-        let signed = staging
+        let mut unsigned = staging
             .build_conway_raw()
-            .and_then(|built| built.sign(key))
             .map_err(|e| Error::Materialise(format!("build: {e}")))?;
+        if let Some(run) = script {
+            let (tx, body_hash) = redeemers_as_map(&unsigned.tx_bytes.0, run.cost_model)?;
+            unsigned.tx_bytes = Bytes(tx);
+            unsigned.tx_hash = Bytes32(body_hash);
+        }
+        let signed = unsigned
+            .sign(key)
+            .map_err(|e| Error::Materialise(format!("build: {e}")))?;
+        let conway_bytes = signed.tx_bytes.0;
         let bytes = match format {
-            TxFormat::Conway => signed.tx_bytes.0,
-            TxFormat::Dijkstra => conway_to_dijkstra(&signed.tx_bytes.0)?,
+            TxFormat::Conway => conway_bytes.clone(),
+            TxFormat::Dijkstra => conway_to_dijkstra(&conway_bytes)?,
         };
         let size = bytes.len();
         let required = pp
             .min_fee_a
             .checked_mul(size as u64)
             .and_then(|f| f.checked_add(pp.min_fee_b))
+            .and_then(|f| f.checked_add(script.map_or(0, |run| run.script_fee)))
             .ok_or_else(|| Error::Materialise("fee overflows".to_string()))?;
         if fee >= required {
             if size as u64 > pp.max_tx_size {
@@ -803,6 +1224,7 @@ pub(crate) fn build_signed(
             return Ok(Built {
                 tx_id: signed.tx_hash.0,
                 bytes,
+                conway_bytes,
                 fee,
                 outputs: amounts,
             });
@@ -810,6 +1232,132 @@ pub(crate) fn build_signed(
         fee = required;
     }
     Err(Error::Materialise("fee did not converge".to_string()))
+}
+
+/// Pallas writes redeemers as the array `[[tag, index, data, ex_units]]`,
+/// which Dijkstra no longer accepts. Rewrite them as the map
+/// `{[tag, index] => [data, ex_units]}`, which Conway accepts too, and the
+/// script data hash over them: `blake2b-256(redeemers ‖ language views)`, with
+/// no datums. Returns the unsigned tx and its new body hash.
+fn redeemers_as_map(tx: &[u8], cost_model: &[i64]) -> Result<(Vec<u8>, [u8; 32])> {
+    let bad = || Error::Materialise("unexpected encoding of a built script tx".to_string());
+    if tx.first() != Some(&0x84) {
+        return Err(bad());
+    }
+    let body_end = cbor_skip(tx, 1).ok_or_else(bad)?;
+    let witnesses_end = cbor_skip(tx, body_end).ok_or_else(bad)?;
+
+    // The witness set with the redeemers re-encoded.
+    let (major, entries, mut at) = cbor_head(tx, body_end).ok_or_else(bad)?;
+    if major != 5 {
+        return Err(bad());
+    }
+    let mut witnesses = tx.get(body_end..at).ok_or_else(bad)?.to_vec();
+    let mut redeemers = None;
+    for _ in 0..entries {
+        let (_, key, _) = cbor_head(tx, at).ok_or_else(bad)?;
+        let key_end = cbor_skip(tx, at).ok_or_else(bad)?;
+        let value_end = cbor_skip(tx, key_end).ok_or_else(bad)?;
+        witnesses.extend_from_slice(tx.get(at..key_end).ok_or_else(bad)?);
+        let value = tx.get(key_end..value_end).ok_or_else(bad)?;
+        if key == 5 {
+            let map = redeemer_map(value).ok_or_else(bad)?;
+            witnesses.extend_from_slice(&map);
+            redeemers = Some(map);
+        } else {
+            witnesses.extend_from_slice(value);
+        }
+        at = value_end;
+    }
+    if at != witnesses_end {
+        return Err(bad());
+    }
+    let redeemers = redeemers.ok_or_else(bad)?;
+
+    let mut views = vec![0xa1, 0x02];
+    burner::cbor_uint(&mut views, 4, cost_model.len() as u64);
+    for cost in cost_model {
+        match u64::try_from(*cost) {
+            Ok(cost) => burner::cbor_uint(&mut views, 0, cost),
+            Err(_) => burner::cbor_uint(&mut views, 1, cost.unsigned_abs() - 1),
+        }
+    }
+    let mut hashed = redeemers;
+    hashed.extend_from_slice(&views);
+    let data_hash = Hasher::<256>::hash(&hashed);
+
+    // The body with field 11, the script data hash, replaced in place.
+    let mut body = tx.get(1..body_end).ok_or_else(bad)?.to_vec();
+    let (major, entries, mut at) = cbor_head(&body, 0).ok_or_else(bad)?;
+    if major != 5 {
+        return Err(bad());
+    }
+    let mut replaced = false;
+    for _ in 0..entries {
+        let (_, key, key_end) = cbor_head(&body, at).ok_or_else(bad)?;
+        let value_end = cbor_skip(&body, key_end).ok_or_else(bad)?;
+        if key == 11 {
+            let hash = body.get_mut(key_end..value_end).ok_or_else(bad)?;
+            if hash.len() != 34 || hash.get(..2) != Some(&[0x58, 0x20][..]) {
+                return Err(bad());
+            }
+            hash.get_mut(2..)
+                .ok_or_else(bad)?
+                .copy_from_slice(data_hash.as_ref());
+            replaced = true;
+        }
+        at = value_end;
+    }
+    if !replaced {
+        return Err(bad());
+    }
+
+    let mut out = vec![0x84];
+    out.extend_from_slice(&body);
+    out.extend_from_slice(&witnesses);
+    out.extend_from_slice(tx.get(witnesses_end..).ok_or_else(bad)?);
+    Ok((out, *Hasher::<256>::hash(&body)))
+}
+
+/// `[[tag, index, data, ex_units], ...]` as `{[tag, index] => [data, ex_units]}`.
+fn redeemer_map(array: &[u8]) -> Option<Vec<u8>> {
+    let (major, count, mut at) = cbor_head(array, 0)?;
+    if major != 4 || count == 0 {
+        return None;
+    }
+    let mut map = Vec::new();
+    burner::cbor_uint(&mut map, 5, count);
+    for _ in 0..count {
+        let (major, items, start) = cbor_head(array, at)?;
+        if major != 4 || items != 4 {
+            return None;
+        }
+        let index_end = cbor_skip(array, cbor_skip(array, start)?)?;
+        let units_end = cbor_skip(array, cbor_skip(array, index_end)?)?;
+        map.push(0x82);
+        map.extend_from_slice(array.get(start..index_end)?);
+        map.push(0x82);
+        map.extend_from_slice(array.get(index_end..units_end)?);
+        at = units_end;
+    }
+    (at == array.len()).then_some(map)
+}
+
+/// The major type and argument of the definite-length CBOR head at `at`, and
+/// the offset just past it.
+fn cbor_head(bytes: &[u8], at: usize) -> Option<(u8, u64, usize)> {
+    let initial = *bytes.get(at)?;
+    let (major, info) = (initial >> 5, initial & 0x1f);
+    match info {
+        0..=23 => Some((major, u64::from(info), at + 1)),
+        24..=27 => {
+            let width = 1usize << (info - 24);
+            let raw = bytes.get(at + 1..at + 1 + width)?;
+            let value = raw.iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b));
+            Some((major, value, at + 1 + width))
+        }
+        _ => None,
+    }
 }
 
 fn manifest_tx(
@@ -835,6 +1383,8 @@ fn manifest_tx(
         labels,
         conflict_sets: vec![],
         orphan_on: vec![],
+        collateral: None,
+        cost: None,
         cbor_hex: hex::encode(&built.bytes),
     }
 }

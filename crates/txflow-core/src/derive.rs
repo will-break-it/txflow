@@ -7,6 +7,7 @@ use std::io::Write;
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 
+use crate::cost::CostValue;
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Contention, Derived, Ir, Ref};
 use crate::metadata::Metadata;
@@ -184,7 +185,7 @@ pub fn membership(
 /// `blake2b256:<hex>` over the canonical JSON of the IR without `derived`:
 /// object keys sorted, `inputs` and `reference_inputs` sorted (they are sets),
 /// empty `labels`, `reference_inputs` and `metadata` and a missing `color`
-/// omitted, so a graph without them hashes as it did before they existed. Streamed into the hasher,
+/// and `cost` omitted, so a graph without them hashes as it did before they existed. Streamed into the hasher,
 /// so no copy of the IR is made, and independent of struct field order and
 /// of serde_json's `preserve_order` feature.
 pub fn ir_hash(ir: &Ir) -> Result<String> {
@@ -305,6 +306,24 @@ fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
             text(out, color)?;
             out.write_all(b",")?;
         }
+        if let Some(cost) = &tx.cost {
+            out.write_all(b"\"cost\":{")?;
+            let fields = [("cpu", cost.cpu), ("mem", cost.mem)];
+            let mut first = true;
+            for (field, value) in fields {
+                let Some(value) = value else { continue };
+                if !first {
+                    out.write_all(b",")?;
+                }
+                first = false;
+                write!(out, "\"{field}\":")?;
+                match value {
+                    CostValue::Share(_) => text(out, &value.to_string())?,
+                    CostValue::Units(units) => write!(out, "{units}")?,
+                }
+            }
+            out.write_all(b"},")?;
+        }
         out.write_all(b"\"inputs\":")?;
         list(out, &sorted_refs(&tx.inputs))?;
         if !tx.labels.is_empty() {
@@ -373,6 +392,10 @@ fn validate(ir: &Ir) -> Result<()> {
             return Err(Error::Graph(format!(
                 "tx `{name}` must have exactly one `change` output, has {changes}"
             )));
+        }
+        if let Some(cost) = &tx.cost {
+            cost.validate()
+                .map_err(|e| Error::Graph(format!("tx `{name}`: {e}")))?;
         }
         for output in &tx.outputs {
             if !ir.wallets.contains(&output.to) {
