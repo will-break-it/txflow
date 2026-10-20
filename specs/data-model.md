@@ -122,7 +122,8 @@ graph without them hashes as it did before they existed.
 **Script cost.** `cost` says how much Plutus execution a transaction carries, not which
 script runs: the load a node takes on to validate it. `cpu` (CPU steps) and `mem` (memory
 units) are each a share of the network's per-transaction limit, `maxTxExecutionUnits`
-(`25%`, `12.5%`: above 0, at most 100, at most two decimals), or a whole number of units.
+(`25%`, `12.5%`: above 0, at most 100, at most two decimals, no spaces or leading
+zeros), or a whole number of units written as a number.
 At least one is given; one left out is kept as low as the script allows. A share keeps
 the IR network-free: `cpu: 25%` is a quarter of whatever the target network allows.
 
@@ -133,9 +134,10 @@ terms, calibrated once per run against the context's cost model and protocol ver
 so materialise picks the redeemer that comes as close to the target as possible without
 going over (within about 0.01% for CPU targets on Musashi). Each script transaction then:
 
-- spends one extra input, its **fuel**: a min-UTxO output that funding locks at the
-  burner's address (no datum), with the redeemer and its execution units; the fuel's
-  value returns in the transaction's change;
+- spends one extra input, its **fuel**: an output that funding locks at the burner's
+  address (no datum) holding the min-UTxO plus this transaction's execution fee, so a
+  cost needs no larger sources; the redeemer and its execution units go with it, and
+  the min-UTxO part returns in the transaction's change;
 - names the run's one **collateral** output, which funding pays to the run address and
   which no transaction spends unless its script fails, which the burner never does;
 - pays the script's execution fee on top of the size fee, `ceil(priceMemory · mem +
@@ -191,7 +193,8 @@ no deep merge), and its own `color` replaces theirs; a pattern instance's do the
 over the spec's. A `cost` replaces a wider one whole, never field by field: a pattern's
 `cost: { mem: 2% }` under a spec's `cost: { cpu: 25% }` gives its txs a memory target
 only. `select.label` limits a spec or pattern cost to the txs with that label, so one
-side of a conflict can carry the load; the others carry none. Spec and pattern costs may
+side of a conflict can carry the load; the others carry none. A label that no tx has
+(no tx the pattern emits, for a pattern's cost) is an error, as in a schedule. Spec and pattern costs may
 use params (`"{{ dose }}%"` for whole percent, `"{{ steps }}"` for units); a tx's own
 `cost` holds plain values only.
 
@@ -343,8 +346,9 @@ Excerpt from the worked example against the demo context:
             "knobs": { "hashes": 36, "bytes": 65344, "loops": 0 } }
   ```
 
-  The protocol-parameter hash covers the Plutus parameters only when the context has
-  them, so a context without them hashes as before.
+  The manifest's `pparams`, their hash and so `run_id` include the Plutus parameters
+  only when a tx has a cost, so a run without one does not depend on them: the same spec
+  gives the same txs whether the context's pparams file carries them or not.
 
 ## 5. Schedule
 

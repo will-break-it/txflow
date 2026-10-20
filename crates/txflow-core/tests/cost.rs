@@ -26,12 +26,27 @@ fn values_parse_and_print_back_the_same() {
         ("12.5%", CostValue::Share(1250)),
         ("0.05%", CostValue::Share(5)),
         ("100%", CostValue::Share(10_000)),
-        ("2500000000", CostValue::Units(2_500_000_000)),
     ] {
         assert_eq!(CostValue::parse(text).ok(), Some(value), "{text}");
         assert_eq!(value.to_string(), text);
     }
-    for bad in ["0%", "100.01%", "1.234%", "%", "1.%", "-1", "0", "ten"] {
+    // Units are numbers; text is a share, spelled one way.
+    assert_eq!(CostValue::Units(2_500_000_000).to_string(), "2500000000");
+    for bad in [
+        "0%",
+        "0.0%",
+        "100.01%",
+        "1.234%",
+        "%",
+        "1.%",
+        "007%",
+        " 25%",
+        "25 %",
+        "-1",
+        "0",
+        "2500000000",
+        "ten",
+    ] {
         assert!(CostValue::parse(bad).is_err(), "{bad}");
     }
     assert_eq!(CostValue::Share(2500).units(10_000_000_000), 2_500_000_000);
@@ -83,6 +98,25 @@ fn select_label_limits_a_cost_to_one_side() {
     assert!(cost_of(&ir, "p/a2").is_some());
     assert_eq!(cost_of(&ir, "p/b1"), None);
     assert_eq!(cost_of(&ir, "p/b2"), None);
+}
+
+#[test]
+fn a_cost_label_that_no_tx_has_is_an_error() {
+    let pairs = "patterns:\n  - { id: p, use: conflicting_chains, with: { length: 2 } ";
+    let report = check(&format!(
+        "{HEAD}cost: {{ cpu: 25%, select: {{ label: side_a }} }}\n{pairs}}}\n"
+    ));
+    assert!(!report.ok);
+    assert!(format!("{:?}", report.errors).contains("`side_a`"));
+    let report = check(&format!(
+        "{HEAD}{pairs}, cost: {{ cpu: 25%, select: {{ label: side_a }} }} }}\n"
+    ));
+    assert!(!report.ok);
+    let errors = format!("{:?}", report.errors);
+    assert!(
+        errors.contains("pattern `p`") && errors.contains("`side_a`"),
+        "{errors}"
+    );
 }
 
 #[test]

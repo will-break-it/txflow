@@ -274,6 +274,8 @@ impl Calibration {
                 let extra_mem = mem - self.base.mem;
                 // More hashes leave less memory for counting; take the
                 // fewest hashes whose length can carry the CPU left over.
+                // Every hash count is tried: whether the CPU left over grows
+                // or shrinks with it depends on the cost model.
                 let mut hashes = 0;
                 while hashes * self.hash.mem <= extra_mem {
                     let loops = (extra_mem - hashes * self.hash.mem) / self.count.mem;
@@ -295,8 +297,6 @@ impl Calibration {
                                 bytes: words * 8,
                                 loops,
                             });
-                        } else if left < hashes * self.hash.steps {
-                            break;
                         }
                     }
                     hashes += 1;
