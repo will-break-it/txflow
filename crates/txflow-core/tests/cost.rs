@@ -120,6 +120,19 @@ fn a_cost_label_that_no_tx_has_is_an_error() {
 }
 
 #[test]
+fn a_spec_cost_label_that_only_reaches_txs_with_their_own_cost_is_an_error() {
+    // The only side-a txs carry their pattern's cost, so the spec's reaches none.
+    let report = check(&format!(
+        "{HEAD}cost: {{ cpu: 25%, select: {{ label: side-a }} }}\n\
+         patterns:\n  - {{ id: p, use: conflicting_chains, with: {{ length: 2 }}, \
+         cost: {{ mem: 2% }} }}\n"
+    ));
+    assert!(!report.ok);
+    let errors = format!("{:?}", report.errors);
+    assert!(errors.contains("takes the spec's cost"), "{errors}");
+}
+
+#[test]
 fn a_cost_changes_the_ir_hash_and_rides_in_the_ir() {
     let spec = |cost: &str| {
         format!("{HEAD}{cost}patterns:\n  - {{ id: p, use: conflict_set, with: {{ k: 2 }} }}\n")

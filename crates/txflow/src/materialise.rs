@@ -363,12 +363,12 @@ pub fn materialise(
     let mut utxos: BTreeMap<String, (Input, u64)> = BTreeMap::new();
 
     // --- Script setup -----------------------------------------------------
-    let script_txs: Vec<&String> = derived
+    let costed: Vec<(&String, &Cost)> = derived
         .topo_order
         .iter()
-        .filter(|name| ir.txs.get(*name).is_some_and(|tx| tx.cost.is_some()))
+        .filter_map(|name| Some((name, ir.txs.get(name)?.cost.as_ref()?)))
         .collect();
-    let setup = if script_txs.is_empty() {
+    let setup = if costed.is_empty() {
         None
     } else {
         Some(script_setup(pp, network)?)
@@ -380,16 +380,16 @@ pub fn materialise(
         None => pp.without_scripts(),
     };
 
-    // Each script tx's target, the burner's knobs for it, and their fee.
-    let mut plans: BTreeMap<&String, CostPlan> = BTreeMap::new();
+    // Each script tx's target, the burner's knobs for it, and their fee, in
+    // topological order; made before funding so an unreachable cost stops the
+    // run before anything is built.
+    let mut plans: Vec<(&String, CostPlan)> = Vec::new();
     if let Some(setup) = &setup {
-        for name in &script_txs {
-            if let Some(cost) = ir.txs.get(*name).and_then(|tx| tx.cost.as_ref()) {
-                let plan = plan_cost(cost, setup).map_err(|e| in_tx(name, e))?;
-                plans.insert(name, plan);
-            }
+        for (name, cost) in &costed {
+            plans.push((name, plan_cost(cost, setup).map_err(|e| in_tx(name, e))?));
         }
     }
+    let plan_of: BTreeMap<&String, &CostPlan> = plans.iter().map(|(n, p)| (*n, p)).collect();
 
     // --- Funding ----------------------------------------------------------
     for (name, source) in &ir.sources {
@@ -414,10 +414,7 @@ pub fn materialise(
         ));
         // Fuel also pays its tx's execution fee, so a cost needs no larger sources.
         let fuel = min_for(&setup.address, pp)?;
-        for name in &script_txs {
-            let plan = plans
-                .get(*name)
-                .ok_or_else(|| Error::Materialise(format!("no cost plan for `{name}`")))?;
+        for (name, plan) in &plans {
             let lovelace = fuel
                 .checked_add(plan.fee)
                 .ok_or_else(|| Error::Materialise("fuel overflows".to_string()))?;
@@ -556,8 +553,8 @@ pub fn materialise(
             });
         }
         let mut input_refs = tx.inputs.clone();
-        let run = match (&tx.cost, &setup) {
-            (Some(cost), Some(setup)) => {
+        let run = match (plan_of.get(name), &setup) {
+            (Some(plan), Some(setup)) => {
                 let (fuel, fuel_lovelace) = utxos
                     .get(&fuel_name(name))
                     .cloned()
@@ -568,11 +565,8 @@ pub fn materialise(
                     .ok_or_else(|| Error::Materialise("no collateral output".to_string()))?;
                 inputs.push((fuel.clone(), fuel_lovelace));
                 input_refs.push(fuel_name(name));
-                let plan = plans
-                    .get(name)
-                    .ok_or_else(|| Error::Materialise(format!("no cost plan for `{name}`")))?;
                 Some((
-                    *cost,
+                    plan.cost,
                     plan.target,
                     ScriptRun {
                         fuel,
@@ -750,6 +744,8 @@ fn script_setup(pp: &ProtocolParams, network: Network) -> Result<ScriptSetup<'_>
 
 /// How a script tx meets its cost.
 struct CostPlan {
+    /// The cost as the IR states it.
+    cost: Cost,
     /// The cost in units against the per-tx limit.
     target: TargetUnits,
     /// The burner's redeemer for it.
@@ -791,6 +787,7 @@ fn plan_cost(cost: &Cost, setup: &ScriptSetup) -> Result<CostPlan> {
         )));
     }
     Ok(CostPlan {
+        cost: *cost,
         target,
         knobs,
         units,
@@ -828,21 +825,28 @@ fn collateral_lovelace(pp: &ProtocolParams, setup: &ScriptSetup) -> Result<u64> 
 
 /// Evaluate the tx's script run with the Plutus evaluator and return what it used.
 fn measure(conway: &[u8], inputs: &[(Input, u64, &Address)], setup: &ScriptSetup) -> Result<Units> {
-    let utxos: Vec<(Vec<u8>, Vec<u8>)> = inputs
-        .iter()
-        .map(|(input, lovelace, address)| {
-            let mut key = vec![0x82, 0x58, 0x20];
-            key.extend_from_slice(&input.tx_hash.0);
-            burner::cbor_uint(&mut key, 0, input.txo_index);
-            let address = address.to_vec();
-            let mut value = vec![0xa2, 0x00];
-            burner::cbor_uint(&mut value, 2, address.len() as u64);
-            value.extend_from_slice(&address);
-            value.push(0x01);
-            burner::cbor_uint(&mut value, 0, *lovelace);
-            (key, value)
-        })
-        .collect();
+    let encode = |e: minicbor::encode::Error<std::convert::Infallible>| {
+        Error::Materialise(format!("encoding a resolved input: {e}"))
+    };
+    let mut utxos: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (input, lovelace, address) in inputs {
+        let key = conway::TransactionInput {
+            transaction_id: Hash::new(input.tx_hash.0),
+            index: input.txo_index,
+        };
+        let value = conway::TransactionOutput::PostAlonzo(KeepRaw::from(
+            conway::PostAlonzoTransactionOutput {
+                address: address.to_vec().into(),
+                value: conway::Value::Coin(*lovelace),
+                datum_option: None,
+                script_ref: None,
+            },
+        ));
+        utxos.push((
+            minicbor::to_vec(&key).map_err(encode)?,
+            minicbor::to_vec(&value).map_err(encode)?,
+        ));
+    }
     // `{2: [costs]}`: the Plutus V3 cost model.
     let cost_models = minicbor::to_vec(language_views(setup.cost_model))
         .map_err(|e| Error::Materialise(format!("cost model: {e}")))?;
@@ -1292,8 +1296,13 @@ fn language_views(cost_model: &[i64]) -> conway::LanguageViews {
 /// body hash.
 fn redeemers_as_map(tx: &[u8], cost_model: &[i64]) -> Result<(Vec<u8>, [u8; 32])> {
     let bad = |what: &str| Error::Materialise(format!("rewriting the redeemers: {what}"));
-    let decoded: conway::Tx = minicbor::decode(tx).map_err(|e| bad(&format!("decode: {e}")))?;
-    let mut witnesses = decoded.transaction_witness_set.clone().unwrap();
+    let conway::Tx {
+        transaction_body,
+        transaction_witness_set,
+        success,
+        auxiliary_data,
+    } = minicbor::decode(tx).map_err(|e| bad(&format!("decode: {e}")))?;
+    let mut witnesses = transaction_witness_set.unwrap();
     let redeemers = match witnesses.redeemer.take().map(|r| r.unwrap()) {
         Some(conway::Redeemers::List(list)) => conway::Redeemers::Map(
             list.into_iter()
@@ -1319,14 +1328,14 @@ fn redeemers_as_map(tx: &[u8], cost_model: &[i64]) -> Result<(Vec<u8>, [u8; 32])
         datums: witnesses.plutus_data.clone(),
         language_views: Some(language_views(cost_model)),
     };
-    let mut body = decoded.transaction_body.clone().unwrap();
+    let mut body = transaction_body.unwrap();
     body.script_data_hash = Some(script_data.hash());
     witnesses.redeemer = Some(KeepRaw::from(redeemers));
     let rebuilt = conway::Tx {
         transaction_body: KeepRaw::from(body),
         transaction_witness_set: KeepRaw::from(witnesses),
-        success: decoded.success,
-        auxiliary_data: decoded.auxiliary_data.clone(),
+        success,
+        auxiliary_data,
     };
     let bytes = minicbor::to_vec(&rebuilt).map_err(|e| bad(&format!("encode: {e}")))?;
     let body_hash = Hasher::<256>::hash_cbor(&rebuilt.transaction_body);

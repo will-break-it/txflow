@@ -45,6 +45,8 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
             Error::Spec(message) => Error::Spec(format!("spec: {message}")),
             other => other,
         })?;
+    // Whether the spec's own cost reached any tx.
+    let mut spec_cost_used = false;
     let mut ids = BTreeSet::new();
     let mut namespaces = BTreeSet::new();
     let mut total_nodes: u64 = 0;
@@ -188,6 +190,7 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                 tx.metadata = tag.metadata.clone();
                 tx.color = tag.color.clone();
                 tx.cost = tag.cost.as_ref().and_then(|c| c.for_labels(&tx.labels));
+                spec_cost_used |= instance.cost.is_none() && tx.cost.is_some();
                 insert_unique(&mut txs, format!("{prefix}{name}"), tx)?;
             }
         }
@@ -212,14 +215,17 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         };
         if tx.cost.is_none() {
             tx.cost = spec_cost.as_ref().and_then(|c| c.for_labels(&tx.labels));
+            spec_cost_used |= tx.cost.is_some();
         }
         insert_unique(&mut txs, name.clone(), tx)?;
     }
 
+    // A label that reaches no tx, because none has it or each that has it
+    // carries its pattern's or its own cost, is a mistake, not an empty set.
     if let Some(label) = spec_cost.as_ref().and_then(|c| c.label.as_ref()) {
-        if !txs.values().any(|t| t.labels.contains(label)) {
+        if !spec_cost_used {
             return Err(Error::Spec(format!(
-                "spec: cost: no transaction has the label `{label}`"
+                "spec: cost: no transaction with the label `{label}` takes the spec's cost"
             )));
         }
     }
