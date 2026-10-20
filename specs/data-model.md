@@ -57,6 +57,7 @@ txs:
     labels: [<string>, ...]
     metadata: { <label>: <value> }     # optional, see below
     color: <rrggbb>                    # optional colour tag, metadata label 1022
+    cost: { cpu: <share|units>, mem: <share|units> }   # optional script cost, see below
 ```
 
 Spending an output locked by `script:<v>` uses validator `<v>`'s execution budget for
@@ -118,6 +119,42 @@ only, never on funding or sweep txs, beside the label 674 message in one auxilia
 map. Empty `metadata` and a missing `color` are left out of the canonical form, so a
 graph without them hashes as it did before they existed.
 
+**Script cost.** `cost` says how much Plutus execution a transaction carries, not which
+script runs: the load a node takes on to validate it. `cpu` (CPU steps) and `mem` (memory
+units) are each a share of the network's per-transaction limit, `maxTxExecutionUnits`
+(`25%`, `12.5%`: above 0, at most 100, at most two decimals), or a whole number of units.
+At least one is given; one left out is kept as low as the script allows. A share keeps
+the IR network-free: `cpu: 25%` is a quarter of whatever the target network allows.
+
+Materialise turns a cost into a run of txflow's **burner**, a fixed Plutus V3 script of
+204 bytes. It hashes a 64 KiB buffer and counts down, as often as its redeemer says, and
+uses the same budget whatever the transaction around it. Its cost is a sum of known
+terms, calibrated once per run against the context's cost model and protocol version,
+so materialise picks the redeemer that comes as close to the target as possible without
+going over (within about 0.01% for CPU targets on Musashi). Each script transaction then:
+
+- spends one extra input, its **fuel**: a min-UTxO output that funding locks at the
+  burner's address (no datum), with the redeemer and its execution units; the fuel's
+  value returns in the transaction's change;
+- names the run's one **collateral** output, which funding pays to the run address and
+  which no transaction spends unless its script fails, which the burner never does;
+- pays the script's execution fee on top of the size fee, `ceil(priceMemory · mem +
+  priceSteps · steps)`, and carries the script data hash for Plutus V3. Redeemers are
+  written as a map, the only form Dijkstra accepts (Conway accepts it too), so both
+  encodings share one body and one tx id.
+
+Before the manifest is written, every script run is evaluated with the Plutus evaluator
+under the context's cost model; a measured cost that differs from the predicted one is an
+error. Some costs no script can reach: on Musashi any Plutus script spends at least
+about 160 CPU steps per memory unit, and the burner spans about 240 (counting) to
+25,000 (hashing). Below the burner's floor, above the per-transaction limit, or at a
+ratio it cannot reach, materialise fails naming the transaction and saying what is
+reachable. A missing `cost` is left out of the canonical form.
+
+A losing transaction of a conflict leaves its fuel at the burner's address. Anyone can
+spend it there (the burner succeeds for any redeemer, e.g. `[0, 0, 0]`); txflow does not
+sweep it yet. The manifest's `burner` names the address.
+
 ## 3. Experiment spec
 
 ```yaml
@@ -129,6 +166,10 @@ wallets:
   <name>: {}                            # MVP: all wallets bind to one key
 metadata: { <label>: <value> }          # optional, on every tx (§2)
 color: <rrggbb>                         # optional colour tag on every tx
+cost:                                   # optional script cost on every tx (§2)
+  cpu: <share|units|expr>               #   `25%`, `2500000000`, `"{{ dose }}%"`
+  mem: <share|units|expr>
+  select: { label: <label> }            #   optional: only txs with this label
 validators: { ... }                     # optional, same schema as §2
 policies: { ... }                       # optional, same schema as §2
 patterns:
@@ -138,6 +179,7 @@ patterns:
     with: { <arg>: <expr> }
     metadata: { <label>: <value> }      # on every tx it emits, over the spec's
     color: <rrggbb>                     # over the spec's
+    cost: { cpu: ..., mem: ..., select: ... }   # instead of the spec's
 txs: { ... }                            # optional explicit IR txs, same schema as §2
 sources: { ... }                        # optional explicit sources
 schedule: { ... }                       # see §5
@@ -146,7 +188,12 @@ expect: [ ... ]                         # see §7
 
 A tx's own `metadata` replaces the pattern's or spec's label by label (a whole label,
 no deep merge), and its own `color` replaces theirs; a pattern instance's do the same
-over the spec's.
+over the spec's. A `cost` replaces a wider one whole, never field by field: a pattern's
+`cost: { mem: 2% }` under a spec's `cost: { cpu: 25% }` gives its txs a memory target
+only. `select.label` limits a spec or pattern cost to the txs with that label, so one
+side of a conflict can carry the load; the others carry none. Spec and pattern costs may
+use params (`"{{ dose }}%"` for whole percent, `"{{ steps }}"` for units); a tx's own
+`cost` holds plain values only.
 
 `<expr>` is a number, a `{{ param }}` substitution, or simple arithmetic over params
 (`{{ pairs * scale }}`). No conditionals or loops: anything richer belongs in a pattern.
@@ -188,6 +235,14 @@ pparams:                         # or `pparams_file: <path>` to a `cardano-cli q
   min_fee_b: 155381              #   maxTxSize, utxoCostPerByte are read; the rest ignored)
   max_tx_size: 16384
   coins_per_utxo_byte: 4310
+  # Read only when a tx has a `cost`; a pparams_file gives them as cardano-cli
+  # writes them (collateralPercentage, executionUnitPrices, maxTxExecutionUnits,
+  # costModels.PlutusV3, protocolVersion).
+  collateral_percentage: 150
+  execution_unit_prices: { price_memory: 0.0577, price_steps: 0.0000721 }
+  max_tx_execution_units: { memory: 16500000, steps: 10000000000 }
+  cost_models: { plutus_v3: [100788, 420, ...] }
+  protocol_version: { major: 12, minor: 0 }
 funding:
   signing_key_file: <path>.skey  # or `signing_key_hex`; one payment key spends all offered UTxOs
   change_address: <bech32>       # optional; where the last funding tx returns change
@@ -269,6 +324,27 @@ Excerpt from the worked example against the demo context:
   `["txflow/1 <origin>", "sweep", "run:<run_id>"]` and the lane split `["txflow/1 cli", "split"]`.
   The manifest maps `index` back to the symbolic name, so names of any length are safe.
   The tx-firehose colour tag (label 1022) is separate and optional.
+- When any tx has a `cost`, funding also pays the collateral and one fuel output per
+  script tx, after the IR's sources (named `:collateral` and `<tx>:fuel` in the funding
+  tx's `sources`), and the manifest gains:
+
+  ```json
+  "burner": { "script_hash": "73827c80…", "address": "addr_test1w…",
+              "collateral": "b40a996b…#12", "floor": { "steps": 7576215, "mem": 38164 } },
+  ```
+
+  and each script tx gains its collateral and its cost, as asked, as units against the
+  context's limit, as measured by the evaluator, and the redeemer that produced it:
+
+  ```json
+  "collateral": "b40a996b…#12",
+  "cost": { "requested": { "cpu": "25%" }, "target": { "steps": 2500000000 },
+            "measured": { "steps": 2499737523, "mem": 160852 },
+            "knobs": { "hashes": 36, "bytes": 65344, "loops": 0 } }
+  ```
+
+  The protocol-parameter hash covers the Plutus parameters only when the context has
+  them, so a context without them hashes as before.
 
 ## 5. Schedule
 

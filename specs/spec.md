@@ -337,6 +337,17 @@ names.
   bind every template input to a graph reference and build the transaction itself,
   without delegating input selection to a tx3 resolver.
 
+**Script load**
+
+- **FR-030**: A spec MUST be able to give transactions a script cost (`cost`: CPU steps
+  and/or memory units, each a share of the network's per-transaction limit or a number of
+  units) without naming a script, on the spec, a pattern instance or a transaction.
+  Materialise MUST add to each such transaction a run of a fixed script whose cost is
+  as close to the target as the script allows without going over, MUST evaluate that
+  run with the network's cost model and record the measured cost in the manifest, and
+  MUST fail rather than build a transaction whose measured cost differs from the one it
+  was built and priced for (data model §2).
+
 ### Key Entities
 
 - **Experiment spec**: what a person writes or the importer produces. Parameters,

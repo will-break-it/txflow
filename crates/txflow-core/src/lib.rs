@@ -9,6 +9,7 @@
 
 pub mod catalogue;
 pub mod check;
+pub mod cost;
 pub mod derive;
 pub mod error;
 pub mod expand;

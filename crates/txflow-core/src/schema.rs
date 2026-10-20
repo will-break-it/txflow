@@ -103,6 +103,11 @@ pub fn schema() -> Value {
                 "$ref": "#/$defs/color",
                 "description": "Colour tag on every tx, unless a pattern or tx sets its own."
             },
+            "cost": {
+                "$ref": "#/$defs/cost_covering",
+                "description": "Script cost of every tx (or of those with `select.label`), \
+                    unless a pattern or tx sets its own."
+            },
             "schedule": { "$ref": "#/$defs/schedule" },
             "expect": {
                 "description": "Expected outcomes. Carried, not yet interpreted."
@@ -182,6 +187,10 @@ fn defs() -> Value {
                 "color": {
                     "$ref": "#/$defs/color",
                     "description": "Colour tag on this tx, over the spec's."
+                },
+                "cost": {
+                    "$ref": "#/$defs/cost",
+                    "description": "Script cost of this tx, instead of the spec's."
                 }
             }
         }),
@@ -259,6 +268,7 @@ fn defs() -> Value {
             }
         }),
     );
+    cost_defs(&mut defs);
     defs.insert("schedule".to_string(), schedule_schema());
     Value::Object(defs)
 }
@@ -370,6 +380,99 @@ fn schedule_schema() -> Value {
     })
 }
 
+/// A share of the per-tx limit with at most two decimals, `25%` or `12.5%`.
+const SHARE: &str = "^(100(\\.00?)?|[0-9]{1,2}(\\.[0-9]{1,2})?)%$";
+/// A share or a number of units written with params: `{{ dose }}%`.
+const COST_TEXT: &str = "^\\s*\\{\\{[^{}]*\\}\\}\\s*%?\\s*$";
+
+fn cost_defs(defs: &mut Map<String, Value>) {
+    let dimensions = |value: &str| {
+        json!({
+            "cpu": {
+                "$ref": format!("#/$defs/{value}"),
+                "description": "CPU steps: a share of the network's per-tx step limit \
+                    (maxTxExecutionUnits.steps), or a number of steps."
+            },
+            "mem": {
+                "$ref": format!("#/$defs/{value}"),
+                "description": "Memory units: a share of the network's per-tx memory limit \
+                    (maxTxExecutionUnits.memory), or a number of units."
+            }
+        })
+    };
+    defs.insert(
+        "cost_value".to_string(),
+        json!({
+            "oneOf": [
+                {
+                    "type": "string",
+                    "pattern": SHARE,
+                    "description": "A share of the per-tx limit, `25%` or `12.5%`, above 0."
+                },
+                {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Execution units."
+                }
+            ]
+        }),
+    );
+    defs.insert(
+        "cost_value_text".to_string(),
+        json!({
+            "oneOf": [
+                { "$ref": "#/$defs/cost_value" },
+                {
+                    "type": "string",
+                    "pattern": COST_TEXT,
+                    "description": "`{{ expression }}%` for a share in whole percent, or \
+                        `{{ expression }}` for units, over `params`."
+                }
+            ]
+        }),
+    );
+    defs.insert(
+        "cost".to_string(),
+        json!({
+            "type": "object",
+            "description": "How much Plutus execution the tx carries, not which script: \
+                materialise adds a run of txflow's burner script that uses as much as \
+                possible without going over. A dimension left out is kept as low as the \
+                script allows. A share keeps the spec network-free.",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": dimensions("cost_value")
+        }),
+    );
+    let mut covering = dimensions("cost_value_text");
+    if let Some(properties) = covering.as_object_mut() {
+        properties.insert(
+            "select".to_string(),
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label"],
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Only txs with this label carry the cost."
+                    }
+                }
+            }),
+        );
+    }
+    defs.insert(
+        "cost_covering".to_string(),
+        json!({
+            "type": "object",
+            "description": "A script cost (see `cost`) for many txs. Values may use params.",
+            "additionalProperties": false,
+            "anyOf": [{ "required": ["cpu"] }, { "required": ["mem"] }],
+            "properties": covering
+        }),
+    );
+}
+
 fn pattern_schema(pattern: &PatternInfo) -> Value {
     let mut args = Map::new();
     for arg in pattern.args.iter().chain(COMMON_ARGS) {
@@ -437,6 +540,11 @@ fn pattern_schema(pattern: &PatternInfo) -> Value {
             "color": {
                 "$ref": "#/$defs/color",
                 "description": "Colour tag on every tx this instance emits, over the spec's."
+            },
+            "cost": {
+                "$ref": "#/$defs/cost_covering",
+                "description": "Script cost of every tx this instance emits (or of those \
+                    with `select.label`), instead of the spec's."
             }
         }
     })

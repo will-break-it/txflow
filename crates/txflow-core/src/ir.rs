@@ -5,13 +5,16 @@
 //! orphans and reference contention are derived from those lists by
 //! [`crate::derive`]; they are never declared.
 //!
-//! This MVP supports plain payments, with metadata: no scripts, tokens, datums or mint.
-//! Unknown fields are rejected so an unsupported feature fails loudly.
+//! Transactions are plain payments with metadata. A tx may also carry a
+//! script [`Cost`]: materialise then adds a run of txflow's burner script that
+//! uses that much execution, without changing the graph. No tokens, datums or
+//! mint. Unknown fields are rejected so an unsupported feature fails loudly.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cost::Cost;
 use crate::error::{Error, Result};
 use crate::metadata::Metadata;
 
@@ -53,6 +56,9 @@ pub struct Tx {
     /// Colour tag, `rrggbb`, written under metadata label 1022.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Script execution this tx carries (see [`crate::cost`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<Cost>,
 }
 
 /// One output of a symbolic transaction.

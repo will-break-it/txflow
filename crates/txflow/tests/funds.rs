@@ -13,6 +13,7 @@ fn pp() -> ProtocolParams {
         min_fee_b: 155_381,
         max_tx_size: 16_384,
         coins_per_utxo_byte: 4_310,
+        ..ProtocolParams::default()
     }
 }
 

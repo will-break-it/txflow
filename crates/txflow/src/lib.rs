@@ -11,6 +11,7 @@ pub use txflow_core::{
     schedule, schema, spec,
 };
 
+pub mod burner;
 pub mod context;
 pub mod funds;
 pub mod materialise;

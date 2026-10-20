@@ -1,0 +1,34 @@
+# Plutus-heavy transactions in conflicting pairs. Ten pairs a<i>, b<i> spend
+# a shared input each, and every transaction also runs a script that uses a
+# quarter of the network's per-transaction CPU budget. Side a goes to
+# Frankfurt and side b to Tokyo at the same instant, so every node validates
+# scripts for transactions it will later drop as conflicts.
+#
+# `cost` says how much script execution a transaction carries, not which
+# script: materialise builds a run of txflow's burner script that uses that
+# much and no more. A share such as `25%` is of the network's
+# maxTxExecutionUnits, so the spec means the same load on any network.
+# Materialise it with a context whose pparams include the Plutus fields:
+#   txflow materialise examples/heavy-conflicting-pairs.yaml --context examples/demo-plutus-context.yaml
+version: 0
+experiment: heavy-conflicting-pairs
+seed: 7
+params:
+  pairs: 10
+  dose: 25
+wallets:
+  alice: {}
+cost:
+  cpu: "{{ dose }}%"
+patterns:
+  - id: pairs
+    use: conflicting_chains
+    with:
+      length: "{{ pairs }}"
+      conflict: per_step
+schedule:
+  releases:
+    - { select: { label: side-a }, target: frankfurt, at: 0ms }
+    - { select: { label: side-b }, target: tokyo, at: 0ms }
+expect:
+  - { id: one_per_conflict, each_conflict_set: { on_chain: exactly_one } }
