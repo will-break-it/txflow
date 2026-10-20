@@ -150,6 +150,35 @@ fn costs_without_a_spec_cost_change_nothing() {
 }
 
 #[test]
+fn a_run_without_a_cost_ignores_the_contexts_plutus_parameters() {
+    // A real context's pparams file carries the Plutus fields; a run with no
+    // script must not depend on them.
+    let plain = "version: 0\nexperiment: s\nseed: 1\nwallets: { alice: {} }\n\
+                 sources: { f: { owner: alice, lovelace: 5000000 } }\n\
+                 txs:\n  q: { inputs: [f], outputs: [{ to: alice, lovelace: change }] }\n";
+    let mut without = ChainContext::load(&example("demo-context.yaml")).expect("demo context");
+    without.era = "conway".to_string();
+    assert_eq!(
+        materialise_yaml(plain, &context("conway")).expect("with"),
+        materialise_yaml(plain, &without).expect("without")
+    );
+}
+
+#[test]
+fn fuel_pays_its_own_execution_fee() {
+    // 1.5 ADA could not pay the ~1.67 ADA execution fee of a full budget;
+    // the fuel output carries it.
+    let spec = "version: 0\nexperiment: s\nseed: 1\nwallets: { alice: {} }\n\
+                sources: { f: { owner: alice, lovelace: 1500000 } }\n\
+                txs:\n  q: { inputs: [f], outputs: [{ to: alice, lovelace: change }], \
+                cost: { cpu: 100%, mem: 100% } }\n";
+    let m = materialise_yaml(spec, &context("conway")).expect("materialises");
+    let q = m.txs.iter().find(|t| t.name == "q").expect("q");
+    assert!(q.fee > 1_500_000, "{}", q.fee);
+    assert!(q.outputs.first().is_some_and(|change| *change >= 1_400_000));
+}
+
+#[test]
 fn absolute_units_and_memory_targets() {
     let m = materialise_yaml(&single("{ cpu: 1000000000, mem: 2% }"), &context("conway"))
         .expect("materialises");

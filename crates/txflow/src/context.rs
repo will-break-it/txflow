@@ -126,6 +126,19 @@ pub struct ProtocolParams {
     pub protocol_version: Option<ProtocolVersion>,
 }
 
+impl ProtocolParams {
+    /// These parameters without the ones only script txs read.
+    pub fn without_scripts(&self) -> ProtocolParams {
+        ProtocolParams {
+            min_fee_a: self.min_fee_a,
+            min_fee_b: self.min_fee_b,
+            max_tx_size: self.max_tx_size,
+            coins_per_utxo_byte: self.coins_per_utxo_byte,
+            ..ProtocolParams::default()
+        }
+    }
+}
+
 /// Execution prices as exact fractions, as the ledger holds them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ExecutionPrices {

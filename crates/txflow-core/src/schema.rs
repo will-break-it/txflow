@@ -380,8 +380,9 @@ fn schedule_schema() -> Value {
     })
 }
 
-/// A share of the per-tx limit with at most two decimals, `25%` or `12.5%`.
-const SHARE: &str = "^(100(\\.00?)?|[0-9]{1,2}(\\.[0-9]{1,2})?)%$";
+/// A share of the per-tx limit with at most two decimals, `25%` or `12.5%`:
+/// above 0, at most 100, no leading zeros or spaces, as [`crate::cost::CostValue::parse`].
+const SHARE: &str = "^(?!0(\\.00?)?%$)(100(\\.00?)?|[1-9]?[0-9](\\.[0-9]{1,2})?)%$";
 /// A share or a number of units written with params: `{{ dose }}%`.
 const COST_TEXT: &str = "^\\s*\\{\\{[^{}]*\\}\\}\\s*%?\\s*$";
 

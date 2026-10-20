@@ -131,6 +131,19 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
             &owner,
         )
         .map_err(|e| in_pattern(&instance.id, e))?;
+        if let Some(label) = instance
+            .cost
+            .as_ref()
+            .and(tag.cost.as_ref())
+            .and_then(|c| c.label.as_ref())
+        {
+            if !fragment.txs.values().any(|t| t.labels.contains(label)) {
+                return Err(Error::Spec(format!(
+                    "pattern `{}`: cost: no transaction it emits has the label `{label}`",
+                    instance.id
+                )));
+            }
+        }
         // Every source, tx, input and output costs memory; count them all.
         let nodes = (fragment.sources.len()
             + fragment
@@ -203,6 +216,13 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         insert_unique(&mut txs, name.clone(), tx)?;
     }
 
+    if let Some(label) = spec_cost.as_ref().and_then(|c| c.label.as_ref()) {
+        if !txs.values().any(|t| t.labels.contains(label)) {
+            return Err(Error::Spec(format!(
+                "spec: cost: no transaction has the label `{label}`"
+            )));
+        }
+    }
     for (name, tx) in &txs {
         let size = metadata::encoded_size(&tx.metadata, tx.color.as_deref());
         if size > metadata::MAX_BYTES {

@@ -33,20 +33,13 @@ pub enum CostValue {
 }
 
 impl CostValue {
-    /// Parse `25%`, `12.5%`, `0.05%` or a whole number of units.
+    /// Parse a share: `25%`, `12.5%`, `0.05%`. Units are written as numbers.
     pub fn parse(text: &str) -> Result<CostValue> {
-        let text = text.trim();
         match text.strip_suffix('%') {
-            Some(number) => parse_share(number.trim()).map(CostValue::Share),
-            None => text
-                .parse::<u64>()
-                .map(CostValue::Units)
-                .map_err(|_| {
-                    Error::Spec(format!(
-                        "`{text}` is neither a share such as `25%` nor a whole number of units"
-                    ))
-                })
-                .and_then(CostValue::checked),
+            Some(number) => parse_share(number).map(CostValue::Share),
+            None => Err(Error::Spec(format!(
+                "`{text}` is not a share such as `25%`; write units as a number, unquoted"
+            ))),
         }
     }
 
@@ -78,11 +71,13 @@ impl CostValue {
 fn parse_share(number: &str) -> Result<u32> {
     let bad = || {
         Error::Spec(format!(
-            "`{number}%` is not a share: write a number from 0.01 to 100, at most two decimals"
+            "`{number}%` is not a share: write a number from 0.01 to 100, at most two \
+             decimals, without spaces or leading zeros"
         ))
     };
     let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
     if whole.is_empty()
+        || (whole.len() > 1 && whole.starts_with('0'))
         || fraction.len() > 2
         || !whole.bytes().all(|b| b.is_ascii_digit())
         || !fraction.bytes().all(|b| b.is_ascii_digit())

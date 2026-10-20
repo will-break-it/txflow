@@ -18,8 +18,11 @@ use std::collections::BTreeMap;
 use pallas_addresses::{
     Address, Network, ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart,
 };
+use pallas_codec::minicbor;
+use pallas_codec::utils::KeepRaw;
 use pallas_crypto::hash::{Hash, Hasher};
 use pallas_crypto::key::ed25519::SecretKey;
+use pallas_primitives::conway;
 use pallas_txbuilder::{BuildConway, Input, Output, StagingTransaction};
 use pallas_txbuilder::{Bytes, Bytes32, ExUnits, ScriptKind};
 use serde::Serialize;
@@ -318,6 +321,7 @@ struct ScriptSetup<'a> {
     protocol_major: u16,
     limit: crate::context::ExecutionUnits,
     prices: crate::context::ExecutionPrices,
+    collateral_percentage: u64,
     address: Address,
 }
 
@@ -369,6 +373,23 @@ pub fn materialise(
     } else {
         Some(script_setup(pp, network)?)
     };
+    // The parameters the run depends on: the script ones only when a tx runs
+    // a script, so a run without one keeps its id whatever else the context holds.
+    let recorded = match setup {
+        Some(_) => pp.clone(),
+        None => pp.without_scripts(),
+    };
+
+    // Each script tx's target, the burner's knobs for it, and their fee.
+    let mut plans: BTreeMap<&String, CostPlan> = BTreeMap::new();
+    if let Some(setup) = &setup {
+        for name in &script_txs {
+            if let Some(cost) = ir.txs.get(*name).and_then(|tx| tx.cost.as_ref()) {
+                let plan = plan_cost(cost, setup).map_err(|e| in_tx(name, e))?;
+                plans.insert(name, plan);
+            }
+        }
+    }
 
     // --- Funding ----------------------------------------------------------
     for (name, source) in &ir.sources {
@@ -391,9 +412,16 @@ pub fn materialise(
             collateral_lovelace(pp, setup)?.max(min_lovelace),
             run_address.clone(),
         ));
+        // Fuel also pays its tx's execution fee, so a cost needs no larger sources.
         let fuel = min_for(&setup.address, pp)?;
         for name in &script_txs {
-            sources.push((fuel_name(name), fuel, setup.address.clone()));
+            let plan = plans
+                .get(*name)
+                .ok_or_else(|| Error::Materialise(format!("no cost plan for `{name}`")))?;
+            let lovelace = fuel
+                .checked_add(plan.fee)
+                .ok_or_else(|| Error::Materialise("fuel overflows".to_string()))?;
+            sources.push((fuel_name(name), lovelace, setup.address.clone()));
         }
     }
     let total_sources = sources
@@ -412,7 +440,7 @@ pub fn materialise(
     let run_id = run_id(
         &derived.hash,
         seed,
-        pp,
+        &recorded,
         &selected,
         &final_change,
         &funding_address,
@@ -540,17 +568,19 @@ pub fn materialise(
                     .ok_or_else(|| Error::Materialise("no collateral output".to_string()))?;
                 inputs.push((fuel.clone(), fuel_lovelace));
                 input_refs.push(fuel_name(name));
-                let (target, knobs, units) = plan_cost(cost, setup).map_err(|e| in_tx(name, e))?;
+                let plan = plans
+                    .get(name)
+                    .ok_or_else(|| Error::Materialise(format!("no cost plan for `{name}`")))?;
                 Some((
                     *cost,
-                    target,
+                    plan.target,
                     ScriptRun {
                         fuel,
                         collateral,
-                        knobs,
-                        units,
+                        knobs: plan.knobs,
+                        units: plan.units,
                         cost_model: setup.cost_model,
-                        script_fee: script_fee(&setup.prices, units)?,
+                        script_fee: plan.fee,
                     },
                 ))
             }
@@ -641,8 +671,8 @@ pub fn materialise(
         tx_format: format.name().to_string(),
         network: context.network,
         network_magic: context.magic,
-        pparams: pp.clone(),
-        pparams_hash: pparams_hash(pp),
+        pparams_hash: pparams_hash(&recorded),
+        pparams: recorded,
         funding_address: bech32(&funding_address)?,
         change_address: match &context.change_address {
             Some(_) => Some(bech32(&final_change)?),
@@ -700,9 +730,11 @@ fn script_setup(pp: &ProtocolParams, network: Network) -> Result<ScriptSetup<'_>
         .execution_unit_prices
         .clone()
         .ok_or_else(|| missing("executionUnitPrices"))?;
-    pp.collateral_percentage
+    let collateral_percentage = pp
+        .collateral_percentage
         .ok_or_else(|| missing("collateralPercentage"))?;
     Ok(ScriptSetup {
+        collateral_percentage,
         calibration: Calibration::new(cost_model, protocol_major)?,
         cost_model,
         protocol_major,
@@ -716,9 +748,19 @@ fn script_setup(pp: &ProtocolParams, network: Network) -> Result<ScriptSetup<'_>
     })
 }
 
-/// The cost in units against the per-tx limit, the burner's knobs for it,
-/// and what those knobs use.
-fn plan_cost(cost: &Cost, setup: &ScriptSetup) -> Result<(TargetUnits, Knobs, Units)> {
+/// How a script tx meets its cost.
+struct CostPlan {
+    /// The cost in units against the per-tx limit.
+    target: TargetUnits,
+    /// The burner's redeemer for it.
+    knobs: Knobs,
+    /// What those knobs use.
+    units: Units,
+    /// The execution fee for `units`.
+    fee: u64,
+}
+
+fn plan_cost(cost: &Cost, setup: &ScriptSetup) -> Result<CostPlan> {
     let target = TargetUnits {
         steps: cost.cpu.map(|v| v.units(setup.limit.steps)),
         mem: cost.mem.map(|v| v.units(setup.limit.memory)),
@@ -748,7 +790,12 @@ fn plan_cost(cost: &Cost, setup: &ScriptSetup) -> Result<(TargetUnits, Knobs, Un
             "script cost: the burner needs {units:?}, above the per-tx limit"
         )));
     }
-    Ok((target, knobs, units))
+    Ok(CostPlan {
+        target,
+        knobs,
+        units,
+        fee: script_fee(&setup.prices, units)?,
+    })
 }
 
 /// `ceil(price_memory * mem + price_steps * steps)`, as the ledger computes it.
@@ -764,7 +811,7 @@ fn script_fee(prices: &crate::context::ExecutionPrices, units: Units) -> Result<
 /// Enough collateral for any tx: the fee of a maximum-size tx using the
 /// whole per-tx execution limit, times the collateral percentage.
 fn collateral_lovelace(pp: &ProtocolParams, setup: &ScriptSetup) -> Result<u64> {
-    let percentage = pp.collateral_percentage.unwrap_or(150);
+    let percentage = setup.collateral_percentage;
     let most = max_fee(pp)?
         .checked_add(script_fee(
             &setup.prices,
@@ -797,15 +844,8 @@ fn measure(conway: &[u8], inputs: &[(Input, u64, &Address)], setup: &ScriptSetup
         })
         .collect();
     // `{2: [costs]}`: the Plutus V3 cost model.
-    let mut cost_models = vec![0xa1, 0x02];
-    burner::cbor_uint(&mut cost_models, 4, setup.cost_model.len() as u64);
-    for cost in setup.cost_model {
-        if *cost >= 0 {
-            burner::cbor_uint(&mut cost_models, 0, *cost as u64);
-        } else {
-            burner::cbor_uint(&mut cost_models, 1, (-1 - *cost) as u64);
-        }
-    }
+    let cost_models = minicbor::to_vec(language_views(setup.cost_model))
+        .map_err(|e| Error::Materialise(format!("cost model: {e}")))?;
     let results = uplc::tx::eval_phase_two_raw_with_protocol(
         conway,
         &utxos,
@@ -823,9 +863,14 @@ fn measure(conway: &[u8], inputs: &[(Input, u64, &Address)], setup: &ScriptSetup
                 .result()
                 .map_err(|e| Error::Materialise(format!("the burner failed: {e}")))?;
             let used = result.cost();
+            let units = |value: i64| {
+                u64::try_from(value).map_err(|_| {
+                    Error::Materialise(format!("the evaluator reported a budget of {value}"))
+                })
+            };
             Ok(Units {
-                steps: u64::try_from(used.cpu).unwrap_or(0),
-                mem: u64::try_from(used.mem).unwrap_or(0),
+                steps: units(used.cpu)?,
+                mem: units(used.mem)?,
             })
         }
         other => Err(Error::Materialise(format!(
@@ -1061,8 +1106,8 @@ fn pparams_hash(pp: &ProtocolParams) -> String {
     ] {
         hasher.input(&value.to_be_bytes());
     }
-    // Script parameters only when present, so a context without them hashes
-    // as it did before they were read.
+    // Script parameters only when present, so parameters without them hash
+    // as they did before they were read.
     let script = (
         &pp.collateral_percentage,
         &pp.execution_unit_prices,
@@ -1234,130 +1279,58 @@ pub(crate) fn build_signed_with(
     Err(Error::Materialise("fee did not converge".to_string()))
 }
 
+/// `{2: [costs]}`: the Plutus V3 cost model, as the script data hash and the
+/// evaluator read it.
+fn language_views(cost_model: &[i64]) -> conway::LanguageViews {
+    conway::LanguageViews([(2, cost_model.to_vec())].into_iter().collect())
+}
+
 /// Pallas writes redeemers as the array `[[tag, index, data, ex_units]]`,
-/// which Dijkstra no longer accepts. Rewrite them as the map
-/// `{[tag, index] => [data, ex_units]}`, which Conway accepts too, and the
-/// script data hash over them: `blake2b-256(redeemers ‖ language views)`, with
-/// no datums. Returns the unsigned tx and its new body hash.
+/// which Dijkstra no longer accepts. Rebuild the tx with them as the map
+/// `{[tag, index] => [data, ex_units]}`, which Conway accepts too, and with
+/// the script data hash over that map. Returns the unsigned tx and its new
+/// body hash.
 fn redeemers_as_map(tx: &[u8], cost_model: &[i64]) -> Result<(Vec<u8>, [u8; 32])> {
-    let bad = || Error::Materialise("unexpected encoding of a built script tx".to_string());
-    if tx.first() != Some(&0x84) {
-        return Err(bad());
-    }
-    let body_end = cbor_skip(tx, 1).ok_or_else(bad)?;
-    let witnesses_end = cbor_skip(tx, body_end).ok_or_else(bad)?;
-
-    // The witness set with the redeemers re-encoded.
-    let (major, entries, mut at) = cbor_head(tx, body_end).ok_or_else(bad)?;
-    if major != 5 {
-        return Err(bad());
-    }
-    let mut witnesses = tx.get(body_end..at).ok_or_else(bad)?.to_vec();
-    let mut redeemers = None;
-    for _ in 0..entries {
-        let (_, key, _) = cbor_head(tx, at).ok_or_else(bad)?;
-        let key_end = cbor_skip(tx, at).ok_or_else(bad)?;
-        let value_end = cbor_skip(tx, key_end).ok_or_else(bad)?;
-        witnesses.extend_from_slice(tx.get(at..key_end).ok_or_else(bad)?);
-        let value = tx.get(key_end..value_end).ok_or_else(bad)?;
-        if key == 5 {
-            let map = redeemer_map(value).ok_or_else(bad)?;
-            witnesses.extend_from_slice(&map);
-            redeemers = Some(map);
-        } else {
-            witnesses.extend_from_slice(value);
-        }
-        at = value_end;
-    }
-    if at != witnesses_end {
-        return Err(bad());
-    }
-    let redeemers = redeemers.ok_or_else(bad)?;
-
-    let mut views = vec![0xa1, 0x02];
-    burner::cbor_uint(&mut views, 4, cost_model.len() as u64);
-    for cost in cost_model {
-        match u64::try_from(*cost) {
-            Ok(cost) => burner::cbor_uint(&mut views, 0, cost),
-            Err(_) => burner::cbor_uint(&mut views, 1, cost.unsigned_abs() - 1),
-        }
-    }
-    let mut hashed = redeemers;
-    hashed.extend_from_slice(&views);
-    let data_hash = Hasher::<256>::hash(&hashed);
-
-    // The body with field 11, the script data hash, replaced in place.
-    let mut body = tx.get(1..body_end).ok_or_else(bad)?.to_vec();
-    let (major, entries, mut at) = cbor_head(&body, 0).ok_or_else(bad)?;
-    if major != 5 {
-        return Err(bad());
-    }
-    let mut replaced = false;
-    for _ in 0..entries {
-        let (_, key, key_end) = cbor_head(&body, at).ok_or_else(bad)?;
-        let value_end = cbor_skip(&body, key_end).ok_or_else(bad)?;
-        if key == 11 {
-            let hash = body.get_mut(key_end..value_end).ok_or_else(bad)?;
-            if hash.len() != 34 || hash.get(..2) != Some(&[0x58, 0x20][..]) {
-                return Err(bad());
-            }
-            hash.get_mut(2..)
-                .ok_or_else(bad)?
-                .copy_from_slice(data_hash.as_ref());
-            replaced = true;
-        }
-        at = value_end;
-    }
-    if !replaced {
-        return Err(bad());
-    }
-
-    let mut out = vec![0x84];
-    out.extend_from_slice(&body);
-    out.extend_from_slice(&witnesses);
-    out.extend_from_slice(tx.get(witnesses_end..).ok_or_else(bad)?);
-    Ok((out, *Hasher::<256>::hash(&body)))
-}
-
-/// `[[tag, index, data, ex_units], ...]` as `{[tag, index] => [data, ex_units]}`.
-fn redeemer_map(array: &[u8]) -> Option<Vec<u8>> {
-    let (major, count, mut at) = cbor_head(array, 0)?;
-    if major != 4 || count == 0 {
-        return None;
-    }
-    let mut map = Vec::new();
-    burner::cbor_uint(&mut map, 5, count);
-    for _ in 0..count {
-        let (major, items, start) = cbor_head(array, at)?;
-        if major != 4 || items != 4 {
-            return None;
-        }
-        let index_end = cbor_skip(array, cbor_skip(array, start)?)?;
-        let units_end = cbor_skip(array, cbor_skip(array, index_end)?)?;
-        map.push(0x82);
-        map.extend_from_slice(array.get(start..index_end)?);
-        map.push(0x82);
-        map.extend_from_slice(array.get(index_end..units_end)?);
-        at = units_end;
-    }
-    (at == array.len()).then_some(map)
-}
-
-/// The major type and argument of the definite-length CBOR head at `at`, and
-/// the offset just past it.
-fn cbor_head(bytes: &[u8], at: usize) -> Option<(u8, u64, usize)> {
-    let initial = *bytes.get(at)?;
-    let (major, info) = (initial >> 5, initial & 0x1f);
-    match info {
-        0..=23 => Some((major, u64::from(info), at + 1)),
-        24..=27 => {
-            let width = 1usize << (info - 24);
-            let raw = bytes.get(at + 1..at + 1 + width)?;
-            let value = raw.iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b));
-            Some((major, value, at + 1 + width))
-        }
-        _ => None,
-    }
+    let bad = |what: &str| Error::Materialise(format!("rewriting the redeemers: {what}"));
+    let decoded: conway::Tx = minicbor::decode(tx).map_err(|e| bad(&format!("decode: {e}")))?;
+    let mut witnesses = decoded.transaction_witness_set.clone().unwrap();
+    let redeemers = match witnesses.redeemer.take().map(|r| r.unwrap()) {
+        Some(conway::Redeemers::List(list)) => conway::Redeemers::Map(
+            list.into_iter()
+                .map(|r| {
+                    (
+                        conway::RedeemersKey {
+                            tag: r.tag,
+                            index: r.index,
+                        },
+                        conway::RedeemersValue {
+                            data: r.data,
+                            ex_units: r.ex_units,
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        Some(map @ conway::Redeemers::Map(_)) => map,
+        None => return Err(bad("no redeemers")),
+    };
+    let script_data = conway::ScriptData {
+        redeemers: Some(redeemers.clone()),
+        datums: witnesses.plutus_data.clone(),
+        language_views: Some(language_views(cost_model)),
+    };
+    let mut body = decoded.transaction_body.clone().unwrap();
+    body.script_data_hash = Some(script_data.hash());
+    witnesses.redeemer = Some(KeepRaw::from(redeemers));
+    let rebuilt = conway::Tx {
+        transaction_body: KeepRaw::from(body),
+        transaction_witness_set: KeepRaw::from(witnesses),
+        success: decoded.success,
+        auxiliary_data: decoded.auxiliary_data.clone(),
+    };
+    let bytes = minicbor::to_vec(&rebuilt).map_err(|e| bad(&format!("encode: {e}")))?;
+    let body_hash = Hasher::<256>::hash_cbor(&rebuilt.transaction_body);
+    Ok((bytes, *body_hash))
 }
 
 fn manifest_tx(
