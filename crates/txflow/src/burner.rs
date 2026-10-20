@@ -302,12 +302,20 @@ impl Calibration {
                     hashes += 1;
                 }
                 let (low, high) = self.steps_range(extra_mem, hash_max);
-                Err(Error::Materialise(format!(
-                    "the burner cannot use {steps} CPU steps with {mem} memory units: with \
-                     that much memory it uses between {} and {} steps",
-                    self.base.steps + low,
-                    self.base.steps + high
-                )))
+                let (low, high) = (self.base.steps + low, self.base.steps + high);
+                if (low..=high).contains(&steps) {
+                    // Inside the range, but between two counts of hashes.
+                    Err(Error::Materialise(format!(
+                        "the burner cannot use {steps} CPU steps with {mem} memory units: \
+                         with that much memory it reaches steps between {low} and {high}, \
+                         but not this one; move `cpu` or `mem` slightly"
+                    )))
+                } else {
+                    Err(Error::Materialise(format!(
+                        "the burner cannot use {steps} CPU steps with {mem} memory units: \
+                         with that much memory it uses between {low} and {high} steps"
+                    )))
+                }
             }
         }
     }
@@ -340,7 +348,7 @@ fn not_affine() -> Error {
 }
 
 /// CBOR head with major type `major` and argument `value`.
-pub(crate) fn cbor_uint(out: &mut Vec<u8>, major: u8, value: u64) {
+fn cbor_uint(out: &mut Vec<u8>, major: u8, value: u64) {
     let major = major << 5;
     match value {
         0..=23 => out.push(major | value as u8),

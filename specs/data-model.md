@@ -153,9 +153,13 @@ about 160 CPU steps per memory unit, and the burner spans about 240 (counting) t
 ratio it cannot reach, materialise fails naming the transaction and saying what is
 reachable. A missing `cost` is left out of the canonical form.
 
-A losing transaction of a conflict leaves its fuel at the burner's address. Anyone can
-spend it there (the burner succeeds for any redeemer, e.g. `[0, 0, 0]`); txflow does not
-sweep it yet. The manifest's `burner` names the address.
+A script transaction that never lands (the losing side of a conflict, or one orphaned by
+it) leaves its fuel at the burner's address: the min-UTxO plus the execution fee it
+would have paid, about 1.06 ADA at `cpu: 25%` on Musashi and 2.5 ADA at a full budget.
+Anyone can spend it there (the burner succeeds for any redeemer, e.g. `[0, 0, 0]`), so
+a third party could also take a fuel output before its transaction is released; that
+transaction then fails as spending a missing input. txflow does not sweep fuel yet. The
+manifest's `burner` names the address.
 
 ## 3. Experiment spec
 

@@ -130,11 +130,12 @@ impl ProtocolParams {
     /// These parameters without the ones only script txs read.
     pub fn without_scripts(&self) -> ProtocolParams {
         ProtocolParams {
-            min_fee_a: self.min_fee_a,
-            min_fee_b: self.min_fee_b,
-            max_tx_size: self.max_tx_size,
-            coins_per_utxo_byte: self.coins_per_utxo_byte,
-            ..ProtocolParams::default()
+            collateral_percentage: None,
+            execution_unit_prices: None,
+            max_tx_execution_units: None,
+            cost_models: None,
+            protocol_version: None,
+            ..self.clone()
         }
     }
 }
