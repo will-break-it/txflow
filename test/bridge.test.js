@@ -489,3 +489,34 @@ test("a bridge without the node's trace cannot sketch its mempool", async () => 
     b.close();
   }
 });
+
+test("/node says how long txs wait in the mempool: those in it now, those a block took and those dropped", async () => {
+  const t0 = Date.parse("2026-10-14T07:20:00Z");
+  let now = t0 + 60_000;
+  const index = new TraceIndex({ start: 0, now: () => now });
+  const line = (at, ns, data) => JSON.stringify({ at, ns, data, sev: "Info", host: "relay" });
+  const id = (c) => c.repeat(64);
+  const at = (s) => new Date(t0 + s * 1000).toISOString();
+  const added = (s, tx) => index.ingest(line(at(s), "Mempool.AddedTx", { tx: { txIdFull: id(tx) } }));
+  const removed = (s, txs, reason) =>
+    index.ingest(line(at(s), "Mempool.RemoveTxs", { txs: txs.map((tx) => ({ tx: { txIdFull: id(tx) }, err: { reason: [reason] } })) }));
+  added(0, "a");
+  added(1, "b");
+  added(2, "c");
+  added(5, "d");
+  added(10, "e");
+  removed(20, ["a", "b"], "AllInputsAreSpent"); // a block took them after 20 s and 19 s
+  removed(30, ["c"], "LedgerFailure (DijkstraUtxowFailure (UtxoFailure (BadInputsUTxO x)))");
+  removed(31, ["z"], "AllInputsAreSpent"); // added before the trace: not counted
+
+  const w = index.node().waits;
+  assert.equal(w.since_ms, t0);
+  assert.deepEqual(w.landed, { txs: 2, p10_ms: 19_000, p50_ms: 20_000, p90_ms: 20_000, max_ms: 20_000 });
+  assert.deepEqual(w.dropped, { txs: 1, p10_ms: 28_000, p50_ms: 28_000, p90_ms: 28_000, max_ms: 28_000 });
+  // d and e, added 55 s and 50 s ago.
+  assert.deepEqual(w.waiting, { txs: 2, p10_ms: 50_000, p50_ms: 55_000, p90_ms: 55_000, max_ms: 55_000 });
+  // Only what left from since_ms on.
+  assert.equal(index.node(t0 + 25_000).waits.landed.txs, 0);
+  assert.equal(index.node(t0 + 25_000).waits.dropped.txs, 1);
+  assert.deepEqual(index.node(t0 + 25_000).waits.waiting.txs, 2);
+});

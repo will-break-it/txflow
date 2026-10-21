@@ -25,7 +25,8 @@
 //   GET  /events?relay=&since=&tx=…    the node's own mempool and block events (TRACE_FILE)
 //   POST /events?relay=  {"since", "tx_ids"}   the same, for up to 5,000 tx ids
 //   GET  /node?relay=&since_ms=        how full the node's mempool is, and from its
-//                                      trace its tx cache, EB fetch bytes and ledger size
+//                                      trace its tx cache, EB fetch bytes, ledger size and
+//                                      how long txs wait in its mempool
 //   GET  /logs?relay=&from_ms=&to_ms=&ns=&limit=   the node's own trace lines in a
 //                                      time window: the notable namespaces only (LOGGED)
 //
@@ -375,6 +376,9 @@ const KEPT = [
 ];
 // The node's own summaries (/node) keep only their latest this many each.
 const NODE_HISTORY = 100;
+// How long the txs that left the mempool were in it: the newest this many
+// (some minutes under load, hours when quiet).
+const MAX_WAITS = 50_000;
 // The trace lines /logs serves: what a node says about its mempool, consensus,
 // chain and peers, as written. Per-tx mempool lines are left out (they flood
 // the window under load, and /events has them per tx), as are the mux, keep
@@ -418,6 +422,13 @@ export function traceMs(at) {
   const whole = Date.parse(`${m[1]}Z`);
   const fraction = Number(`0.${(m[2] ?? "0").padEnd(9, "0").slice(0, 9)}`);
   return Math.round((whole + fraction * 1000) * 1000) / 1000;
+}
+
+/** {txs, p10_ms, p50_ms, p90_ms, max_ms} of durations `ms` (nulls when none). */
+export function spread(ms) {
+  ms.sort((a, b) => a - b);
+  const at = (q) => (ms.length ? ms[Math.min(ms.length - 1, Math.floor(q * ms.length))] : null);
+  return { txs: ms.length, p10_ms: at(0.1), p50_ms: at(0.5), p90_ms: at(0.9), max_ms: ms.length ? ms[ms.length - 1] : null };
 }
 
 /** The short reason a node gave for removing or rejecting a tx. */
@@ -488,6 +499,9 @@ export class TraceIndex {
     // here for good, so when the node says it holds fewer txs than this, the
     // oldest go first.
     this.pool = new Map();
+    // The txs that left the pool: {at_ms, ms (how long it held them), landed
+    // (AllInputsAreSpent: a block spent their inputs)}, oldest first.
+    this.waits = [];
     this.firstMs = null; // the earliest trace time read, for what the pool can know
     // The LOGGED lines as written (cut to MAX_LINE_CHARS), oldest first, for /logs.
     this.lines = [];
@@ -538,7 +552,27 @@ export class TraceIndex {
   node(sinceMs = null) {
     const after = (list) => (sinceMs == null ? list : list.filter((e) => e.at_ms >= sinceMs));
     const { mempool, bodyHits, arrivals, ledger } = this.state;
-    return { reading: this.reading, mempool, body_hits: after(bodyHits), fetch_arrivals: after(arrivals), ledger };
+    return { reading: this.reading, mempool, body_hits: after(bodyHits), fetch_arrivals: after(arrivals), ledger, waits: this.waited(sinceMs) };
+  }
+
+  /**
+   * How long txs wait in the mempool, from the trace's add and remove times:
+   * {since_ms (the earliest trace time read: a tx added before it is not
+   * counted), waiting (the txs in it now, by how long ago they were added),
+   * landed (those a block took, from `sinceMs` on when given, by how long they
+   * were in it), dropped (those that left for another reason, the same)}.
+   * Each is {txs, p10_ms, p50_ms, p90_ms, max_ms}.
+   */
+  waited(sinceMs = null) {
+    const now = this.now();
+    const landed = [];
+    const dropped = [];
+    for (let i = this.waits.length - 1; i >= 0 && (sinceMs == null || this.waits[i].at_ms >= sinceMs); i--) {
+      (this.waits[i].landed ? landed : dropped).push(this.waits[i].ms);
+    }
+    const waiting = [];
+    for (const at of this.pool.values()) if (at != null) waiting.push(Math.max(0, now - at));
+    return { since_ms: this.firstMs, waiting: spread(waiting), landed: spread(landed), dropped: spread(dropped) };
   }
 
   /**
@@ -641,7 +675,15 @@ export class TraceIndex {
       const tx = idOf(d.tx);
       if (tx) this.pool.set(tx, base.at_ms);
     } else if (ns === "Mempool.RemoveTxs") {
-      for (const r of d.txs ?? []) this.pool.delete(idOf(r.tx));
+      for (const r of d.txs ?? []) {
+        const tx = idOf(r.tx);
+        const added = this.pool.get(tx);
+        if (added != null && base.at_ms != null) {
+          this.waits.push({ at_ms: base.at_ms, ms: Math.max(0, base.at_ms - added), landed: reasonOf(r.err) === "AllInputsAreSpent" });
+          if (this.waits.length > MAX_WAITS * 1.25) this.waits = this.waits.slice(-MAX_WAITS);
+        }
+        this.pool.delete(tx);
+      }
     }
     // Mempool events carry its size after them (when the node's tracer gives it).
     const size = d.mempoolSize;
