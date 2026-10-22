@@ -71,6 +71,12 @@ in
       type = lib.types.str;
       description = "File with BRIDGE_TOKEN= and TUNNEL_TOKEN=, outside the store.";
     };
+    nodejs = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.nodejs_22;
+      defaultText = lib.literalExpression "pkgs.nodejs_22";
+      description = "The Node.js that runs the bridge; 22.23.4 or later has the October 2026 security fixes.";
+    };
     tunnel = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -94,7 +100,7 @@ in
         TRACE_FILE = cfg.traceFile;
       };
       serviceConfig = hardening // {
-        ExecStart = "${pkgs.nodejs_22}/bin/node ${cfg.src}/scripts/relay-bridge.mjs";
+        ExecStart = "${cfg.nodejs}/bin/node ${cfg.src}/scripts/relay-bridge.mjs";
         EnvironmentFile = cfg.environmentFile;
         SupplementaryGroups = [ cfg.socketGroup ];
         MemoryMax = "512M";

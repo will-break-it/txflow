@@ -12,7 +12,7 @@
 # (a relay relaunched) or to update the bridge; it keeps the key.
 #
 # Environment: CARDANO_CLI (Linux build from the relays' Leios release; found
-# on PATH), NODE (Node.js 20+, found on PATH), CLOUDFLARED (found on PATH),
+# on PATH), NODE (Node.js 22+, found on PATH), CLOUDFLARED (found on PATH),
 # NETWORK (musashi), REMOTE_USER (txflow), REMOTE_SOCKET
 # (/run/musashi/node.socket), TUNNEL_TOKEN_FILE (the tunnel's token).
 set -eu
@@ -27,7 +27,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$HERE/../.."
 SOCKET_DIR=/run/txflow
 
-[ -n "$NODE" ] || { echo "node (Node.js 20 or newer) is not on PATH; set NODE" >&2; exit 1; }
+[ -n "$NODE" ] || { echo "node (Node.js 22 or newer) is not on PATH; set NODE" >&2; exit 1; }
 [ -n "$CARDANO_CLI" ] || { echo "cardano-cli is not on PATH; set CARDANO_CLI" >&2; exit 1; }
 [ -n "$CLOUDFLARED" ] || { echo "cloudflared is not on PATH; set CLOUDFLARED" >&2; exit 1; }
 : "${TUNNEL_TOKEN_FILE:?set TUNNEL_TOKEN_FILE to the tunnel token's file}"

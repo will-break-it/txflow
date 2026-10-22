@@ -26,7 +26,7 @@ NODE="${NODE:-$(command -v node || true)}"
 CARDANO_CLI="${CARDANO_CLI:-$(command -v cardano-cli || true)}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-[ -n "$NODE" ] || { echo "node (Node.js 20 or newer) is not on PATH; set NODE" >&2; exit 1; }
+[ -n "$NODE" ] || { echo "node (Node.js 22 or newer) is not on PATH; set NODE" >&2; exit 1; }
 [ -n "$CARDANO_CLI" ] || { echo "cardano-cli is not on PATH; set CARDANO_CLI" >&2; exit 1; }
 [ -S "$SOCKET" ] || { echo "no node socket at $SOCKET; set SOCKET" >&2; exit 1; }
 
