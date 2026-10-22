@@ -9,6 +9,7 @@ use crate::error::Result;
 use crate::ir::{Source, Tx};
 use crate::metadata::Metadata;
 use crate::schedule::Schedule;
+use crate::validity::ValiditySpec;
 
 /// Version of the spec format this crate reads. Adding a pattern or an
 /// argument keeps it; a change that makes an existing spec invalid or mean
@@ -37,6 +38,10 @@ pub struct ExperimentSpec {
     /// pattern instance or tx sets its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostSpec>,
+    /// Validity window on every tx (or those `select` names), unless a
+    /// pattern instance or tx sets its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity: Option<ValiditySpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub patterns: Vec<PatternInstance>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -75,6 +80,9 @@ pub struct PatternInstance {
     /// Script cost on the txs this instance emits, replacing the spec's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostSpec>,
+    /// Validity window on the txs this instance emits, replacing the spec's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity: Option<ValiditySpec>,
 }
 
 impl ExperimentSpec {

@@ -7,8 +7,9 @@
 //!
 //! Transactions are plain payments with metadata. A tx may also carry a
 //! script [`Cost`]: materialise then adds a run of txflow's burner script that
-//! uses that much execution, without changing the graph. No tokens, datums or
-//! mint. Unknown fields are rejected so an unsupported feature fails loudly.
+//! uses that much execution, without changing the graph. It may also carry a
+//! [`Validity`] window, which materialise writes as the tx's validity
+//! interval. No tokens, datums or mint. Unknown fields are rejected so an unsupported feature fails loudly.
 
 use std::collections::BTreeMap;
 
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::cost::Cost;
 use crate::error::{Error, Result};
 use crate::metadata::Metadata;
+use crate::validity::Validity;
 
 /// The graph IR. Maps are `BTreeMap`s so serialisation is canonical.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -59,6 +61,9 @@ pub struct Tx {
     /// Script execution this tx carries (see [`crate::cost`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<Cost>,
+    /// Slots it is valid in, after the run's start or tip (see [`crate::validity`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity: Option<Validity>,
 }
 
 /// One output of a symbolic transaction.

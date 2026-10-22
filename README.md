@@ -61,7 +61,10 @@ or a `color` that `mempool-monitor` paints them in
 ([example](examples/tagged-double-spend.yaml)). Give transactions a script
 `cost` such as `{ cpu: 25% }` of the network's per-transaction budget and each
 one runs a script that uses that much
-([example](examples/heavy-conflicting-pairs.yaml)). Every field is in the
+([example](examples/heavy-conflicting-pairs.yaml)). Give them a `validity`
+window such as `{ until: 3, anchor: tip }`, in slots after the run's start or its
+tip, and chain short-lived txs with a `step` per generation
+([example](examples/expiring-chain.yaml)). Every field is in the
 [spec reference](https://txflow.fun/spec.html); the JSON Schema is at
 [txflow.fun/schema/v0.json](https://txflow.fun/schema/v0.json) (source in
 [`core/schema/v0/`](schema/v0/)).

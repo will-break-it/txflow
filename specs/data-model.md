@@ -53,7 +53,7 @@ txs:
         datum: { bytes: <u32> } | { inline: <cbor-hex> }   # optional
         pad_bytes: <u32>               # optional, inflates tx to a target size
     template: { file: <path>.tx3, tx: <name>, args: { ... }, hash: <blake2b256> }  # optional (story 5)
-    validity: { from_slot_offset: <i64>, ttl_slots: <u64> }  # optional, relative to replay start
+    validity: { from: <slots>, until: <slots>, anchor: start | tip }  # optional, see below
     labels: [<string>, ...]
     metadata: { <label>: <value> }     # optional, see below
     color: <rrggbb>                    # optional colour tag, metadata label 1022
@@ -153,6 +153,30 @@ about 160 CPU steps per memory unit, and the burner spans about 240 (counting) t
 ratio it cannot reach, materialise fails naming the transaction and saying what is
 reachable. A missing `cost` is left out of the canonical form.
 
+**Validity windows.** `validity` says in which slots a transaction is valid, counted
+from an anchor rather than as absolute slots, so the spec means the same on every run.
+`from` becomes the ledger's `invalid_before` (the first slot the tx is valid in) and
+`until` its `invalid_hereafter` (the first slot it no longer is); either may be left out,
+and `until` must be after `from`. `anchor` is what they count from:
+
+- `start` (the default): the slot the schedule starts in, `at: 0ms`, so a window and a
+  release offset share one clock (on Musashi a slot is one second);
+- `tip`: the slot of the tip block when the schedule starts.
+
+A node checks a transaction against the slot after its tip, both when it takes it into
+its mempool and when it revalidates its mempool after a new block, not against the clock.
+The tip trails the clock by the time since the last block, about 20 s on average on
+Musashi. So `from` counted from the start can be refused as not yet valid for a while,
+and a transaction past its `until` can still be admitted, and held, by a node whose tip
+is older; only the block forged in a slot at or after `until` can no longer carry it.
+`tip` is the anchor that edges near zero mean to a node: `until: 2, anchor: tip` is
+admitted and relayed, and only a block in the slot right after the tip could carry it.
+
+Expansion checks that a window is not empty. `txflow check` warns about a tx whose window
+closes before its parent's opens (it can never land), and, with a network that has a
+slot clock (`slots` in the network file), about sends outside their tx's window. A
+missing `validity` is left out of the canonical form, and so is `anchor: start`.
+
 A script transaction that never lands (the losing side of a conflict, or one orphaned by
 it) leaves its fuel at the burner's address: the min-UTxO plus the execution fee it
 would have paid, about 1.06 ADA at `cpu: 25%` on Musashi and 2.5 ADA at a full budget.
@@ -176,6 +200,12 @@ cost:                                   # optional script cost on every tx (§2)
   cpu: <share|units|expr>               #   `25%`, `2500000000`, `"{{ dose }}%"`
   mem: <share|units|expr>
   select: { label: <label> }            #   optional: only txs with this label
+validity:                               # optional validity window on every tx (§2)
+  from: <slots|expr>                    #   invalid_before, after the anchor
+  until: <slots|expr>                   #   invalid_hereafter, after the anchor
+  anchor: start | tip                   #   default start
+  step: <slots|expr>                    #   optional: shift per generation, default 0
+  select: { label: <label>, depth: <n> }   # optional: only these txs (either or both)
 validators: { ... }                     # optional, same schema as §2
 policies: { ... }                       # optional, same schema as §2
 patterns:
@@ -186,6 +216,7 @@ patterns:
     metadata: { <label>: <value> }      # on every tx it emits, over the spec's
     color: <rrggbb>                     # over the spec's
     cost: { cpu: ..., mem: ..., select: ... }   # instead of the spec's
+    validity: { from: ..., until: ..., step: ..., select: ... }   # instead of the spec's
 txs: { ... }                            # optional explicit IR txs, same schema as §2
 sources: { ... }                        # optional explicit sources
 schedule: { ... }                       # see §5
@@ -201,6 +232,17 @@ side of a conflict can carry the load; the others carry none. A label that no tx
 (no tx the pattern emits, for a pattern's cost) is an error, as in a schedule. Spec and pattern costs may
 use params (`"{{ dose }}%"` for whole percent, `"{{ steps }}"` for units); a tx's own
 `cost` holds plain values only.
+
+A `validity` replaces a wider one whole, as `cost` does. On the spec and on pattern
+instances it may use params, and two more fields: `step` shifts the window by that many
+slots per **generation**, and `select` limits which txs take it. A tx's generation is 0
+when it spends and reads only sources (the first tx of a chain), and otherwise one more
+than the latest tx it spends or reads from. So on a `chain`, `validity: { until: 4, step:
+4 }` gives t1 four slots, t2 eight, t3 twelve, and `validity: { from: 0, until: 4, step: 4
+}` gives each tx its own four slots, one after the other; `select: { depth: 0 }` puts a
+window on the first tx alone, so it expires while its descendants carry none of their
+own. A `select` that reaches no tx is an error. A tx's own `validity` holds plain
+`from`, `until` and `anchor` only.
 
 `<expr>` is a number, a `{{ param }}` substitution, or simple arithmetic over params
 (`{{ pairs * scale }}`). No conditionals or loops: anything richer belongs in a pattern.
@@ -250,6 +292,9 @@ pparams:                         # or `pparams_file: <path>` to a `cardano-cli q
   max_tx_execution_units: { memory: 16500000, steps: 10000000000 }
   cost_models: { plutus_v3: [100788, 420, ...] }
   protocol_version: { major: 12, minor: 0 }
+slots:                           # optional: what validity windows count from (§2)
+  start: <slot>                  #   the slot the schedule starts in
+  tip: <slot>                    #   the slot of the tip block then (at most `start`)
 funding:
   signing_key_file: <path>.skey  # or `signing_key_hex`; one payment key spends all offered UTxOs
   change_address: <bech32>       # optional; where the last funding tx returns change
@@ -262,6 +307,11 @@ Materialise uses the smallest prefix of `utxos` whose value covers the sources, 
 reserve of one maximum-size fee per funding transaction, and the min-UTxO change. The rest
 stay untouched. A shortfall is reported with the amount needed before anything is built.
 Relative paths resolve against the context file's directory.
+
+`slots` is needed only by txs with a validity window, and then only the anchor their
+windows count from. A run that does not know its start until funding has landed builds
+twice: once to fund, and again with `slots` just before it starts, since funding does not
+depend on them (below).
 
 How the file is produced (a one-off node query, Ogmios, db-sync, or a future net-rs N2C
 client) is outside the format. `txflow context` may offer helpers.
@@ -331,6 +381,15 @@ Excerpt from the worked example against the demo context:
   `["txflow/1 <origin>", "sweep", "run:<run_id>"]` and the lane split `["txflow/1 cli", "split"]`.
   The manifest maps `index` back to the symbolic name, so names of any length are safe.
   The tx-firehose colour tag (label 1022) is separate and optional.
+- When any tx has a validity window, the manifest records the context's `slots`, and
+  each such tx gains its window as asked and as the slots it became:
+
+  ```json
+  "validity": { "requested": { "until": 3, "anchor": "tip" }, "invalid_hereafter": 431991 }
+  ```
+
+  Neither `run_id` nor any funding tx depends on `slots`, so the same spec and context
+  built for a later start fund the same way and differ only in the experiment txs.
 - When any tx has a `cost`, funding also pays the collateral and one fuel output per
   script tx, after the IR's sources (named `:collateral` and `<tx>:fuel` in the funding
   tx's `sources`), and the manifest gains:

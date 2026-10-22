@@ -4,6 +4,7 @@
 //! parameters (inline or from `cardano-cli query protocol-parameters` JSON),
 //! and offers funding UTxOs with the key that spends them. Materialise uses
 //! the offered UTxOs in order, taking only as many as the experiment needs.
+//! A spec with validity windows also needs the run's start or tip slot.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,9 @@ struct ContextFile {
     /// `cli` when not given.
     #[serde(default)]
     origin: Option<String>,
+    /// The run's start and tip slots, for txs with a validity window.
+    #[serde(default)]
+    slots: RunSlots,
     funding: FundingFile,
 }
 
@@ -239,6 +243,34 @@ pub struct OfferedUtxo {
     pub lovelace: u64,
 }
 
+/// The slots a run's validity windows count from (see
+/// [`txflow_core::validity`]): the slot its schedule starts in, and the slot
+/// of the tip block then. Needed only by txs with a window that counts from
+/// them.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RunSlots {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip: Option<u64>,
+}
+
+impl RunSlots {
+    /// A tip after the start is a clock or a context that is wrong.
+    pub fn validate(&self) -> Result<()> {
+        if let (Some(start), Some(tip)) = (self.start, self.tip) {
+            if tip > start {
+                return Err(Error::Context(format!(
+                    "`slots.tip` ({tip}) is after `slots.start` ({start}); the tip block \
+                     cannot be newer than the slot the run starts in"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A 32-byte Ed25519 secret key. `Debug` never prints it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretKeyBytes(pub [u8; 32]);
@@ -264,6 +296,8 @@ pub struct ChainContext {
     /// Where the txs are built, e.g. `cli` or `txflow.fun`: the second word of
     /// each tx's watermark ([`crate::materialise::watermark`]).
     pub origin: String,
+    /// The run's start and tip slots, for txs with a validity window.
+    pub slots: RunSlots,
 }
 
 /// `origin` when it fits in a tx message: 1-48 of `a-z0-9.-`.
@@ -356,6 +390,10 @@ impl ChainContext {
             change_address: file.funding.change_address,
             offered,
             origin: check_origin(file.origin.as_deref().unwrap_or("cli"))?,
+            slots: {
+                file.slots.validate()?;
+                file.slots
+            },
         })
     }
 }

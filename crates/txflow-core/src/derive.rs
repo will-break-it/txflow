@@ -11,6 +11,7 @@ use crate::cost::CostValue;
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Contention, Derived, Ir, Ref};
 use crate::metadata::Metadata;
+use crate::validity::Anchor;
 
 /// Largest total of (tx, upstream conflict) relations `derive` will compute.
 const MAX_RELATIONS: u64 = 2_000_000;
@@ -184,9 +185,10 @@ pub fn membership(
 
 /// `blake2b256:<hex>` over the canonical JSON of the IR without `derived`:
 /// object keys sorted, `inputs` and `reference_inputs` sorted (they are sets),
-/// empty `labels`, `reference_inputs` and `metadata` and a missing `color`
-/// and `cost` omitted, so a graph without them hashes as it did before they existed. Streamed into the hasher,
-/// so no copy of the IR is made, and independent of struct field order and
+/// empty `labels`, `reference_inputs` and `metadata`, a missing `color`,
+/// `cost` and `validity`, and a window's `anchor` when it is `start`, omitted,
+/// so a graph without them hashes as it did before they existed. Streamed
+/// into the hasher, so no copy of the IR is made, and independent of struct field order and
 /// of serde_json's `preserve_order` feature.
 pub fn ir_hash(ir: &Ir) -> Result<String> {
     let mut hasher = Blake2bVar::new(32)
@@ -354,6 +356,21 @@ fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
             out.write_all(b",\"reference_inputs\":")?;
             list(out, &sorted_refs(&tx.reference_inputs))?;
         }
+        if let Some(validity) = &tx.validity {
+            out.write_all(b",\"validity\":{")?;
+            let mut fields = vec![];
+            if validity.anchor != Anchor::Start {
+                fields.push(format!("\"anchor\":\"{}\"", validity.anchor.as_str()));
+            }
+            if let Some(from) = validity.from {
+                fields.push(format!("\"from\":{from}"));
+            }
+            if let Some(until) = validity.until {
+                fields.push(format!("\"until\":{until}"));
+            }
+            out.write_all(fields.join(",").as_bytes())?;
+            out.write_all(b"}")?;
+        }
         out.write_all(b"}")?;
     }
     write!(out, "}},\"version\":{},\"wallets\":", ir.version)?;
@@ -397,6 +414,11 @@ fn validate(ir: &Ir) -> Result<()> {
             cost.validate()
                 .map_err(|e| Error::Graph(format!("tx `{name}`: {e}")))?;
         }
+        if let Some(validity) = &tx.validity {
+            validity
+                .validate()
+                .map_err(|e| Error::Graph(format!("tx `{name}`: {e}")))?;
+        }
         for output in &tx.outputs {
             if !ir.wallets.contains(&output.to) {
                 return Err(Error::Graph(format!(
@@ -437,6 +459,27 @@ fn resolve(ir: &Ir, tx_name: &str, input: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Each tx's generation: 0 when it spends and reads only sources, otherwise
+/// one more than the latest tx it spends or reads from. `order` is the IR's
+/// topological order.
+pub fn generations(ir: &Ir, order: &[String]) -> Result<BTreeMap<String, u64>> {
+    let mut generation: BTreeMap<String, u64> = BTreeMap::new();
+    for name in order {
+        let tx = ir
+            .txs
+            .get(name)
+            .ok_or_else(|| Error::Graph(format!("missing tx `{name}`")))?;
+        let mut own = 0;
+        for input in tx.inputs.iter().chain(tx.reference_inputs.iter()) {
+            if let Ref::Output { tx: parent, .. } = Ref::parse(input)? {
+                own = own.max(generation.get(&parent).map_or(0, |g| g + 1));
+            }
+        }
+        generation.insert(name.clone(), own);
+    }
+    Ok(generation)
 }
 
 /// Kahn's algorithm, one layer at a time: every tx whose parents are all

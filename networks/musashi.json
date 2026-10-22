@@ -3,7 +3,7 @@
   "name": "Musashi",
   "protocol": "Ouroboros Leios",
   "magic": 164,
-  "description": "The Leios test network. Relays named after their AWS regions' cities: Frankfurt, N. Virginia, Tokyo, Oregon, Sydney, São Paulo and Mumbai (a temporary relay can carry `until`, when it leaves the site); the earlier ids europe, americas and asia still work in specs. Nodes listen for node-to-node on 3010 and serve node-to-client only on their local socket, reached over SSH. Both are open to allow-listed addresses only. Hosts are a snapshot of 2026-10-19 and change when an instance is stopped.",
+  "description": "The Leios test network. Relays named after their AWS regions' cities: Frankfurt, N. Virginia, Tokyo, Oregon, Sydney, São Paulo and Mumbai (a temporary relay can carry `until`, when it leaves the site); the earlier ids europe, americas and asia still work in specs. Nodes listen for node-to-node on 3010 and serve node-to-client only on their local socket, reached over SSH. Both are open to allow-listed addresses only. Hosts are a snapshot of 2026-10-19 and change when an instance is stopped. `slots` is the Shelley genesis of the 2026w42 roll (systemStart 2026-10-18T00:00:00Z, one-second slots) and changes when the network is rolled again.",
   "relays": [
     {
       "id": "frankfurt",
@@ -90,5 +90,9 @@
     "tx": "https://kleioscan.com/#/leios/tx/{tx}",
     "address": "https://kleioscan.com/#/leios/address/{address}",
     "block": "https://kleioscan.com/#/musashi/block/{block}"
+  },
+  "slots": {
+    "start": "2026-10-18T00:00:00Z",
+    "length_ms": 1000
   }
 }

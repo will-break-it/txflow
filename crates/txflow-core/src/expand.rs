@@ -10,6 +10,7 @@ use crate::ir::{Ir, Source, Tx};
 use crate::metadata::{self, Metadata};
 use crate::patterns::{self, Args, Flags, MAX_ELEMENTS};
 use crate::spec::{ExperimentSpec, VERSION};
+use crate::validity;
 
 /// Expand patterns, merge explicit sources and txs, validate, and derive relations.
 pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
@@ -47,6 +48,19 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         })?;
     // Whether the spec's own cost reached any tx.
     let mut spec_cost_used = false;
+    // Validity windows for many txs, and who wrote each (a pattern id, or
+    // `None` for the spec's), and which tx takes which. Placed once the whole
+    // graph is known, since `step` and `select.depth` need each tx's generation.
+    let mut windows: Vec<(validity::Covering, Option<String>)> = vec![];
+    if let Some(spec_validity) = &spec.validity {
+        let covering = spec_validity.resolve(&spec.params).map_err(|e| match e {
+            Error::Spec(message) => Error::Spec(format!("spec: {message}")),
+            other => other,
+        })?;
+        windows.push((covering, None));
+    }
+    let spec_window = (!windows.is_empty()).then_some(0);
+    let mut window_of: BTreeMap<String, usize> = BTreeMap::new();
     let mut ids = BTreeSet::new();
     let mut namespaces = BTreeSet::new();
     let mut total_nodes: u64 = 0;
@@ -97,6 +111,16 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                 ),
                 None => spec_cost.clone(),
             },
+        };
+        let instance_window = match &instance.validity {
+            Some(v) => {
+                let covering = v
+                    .resolve(&spec.params)
+                    .map_err(|e| in_pattern(&instance.id, e))?;
+                windows.push((covering, Some(instance.id.clone())));
+                Some(windows.len() - 1)
+            }
+            None => spec_window,
         };
         let mut with = instance.with.clone();
         let flags = Flags {
@@ -191,6 +215,9 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                 tx.color = tag.color.clone();
                 tx.cost = tag.cost.as_ref().and_then(|c| c.for_labels(&tx.labels));
                 spec_cost_used |= instance.cost.is_none() && tx.cost.is_some();
+                if let Some(window) = instance_window {
+                    window_of.insert(format!("{prefix}{name}"), window);
+                }
                 insert_unique(&mut txs, format!("{prefix}{name}"), tx)?;
             }
         }
@@ -216,6 +243,14 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         if tx.cost.is_none() {
             tx.cost = spec_cost.as_ref().and_then(|c| c.for_labels(&tx.labels));
             spec_cost_used |= tx.cost.is_some();
+        }
+        match &tx.validity {
+            Some(own) => own.validate().map_err(in_tx)?,
+            None => {
+                if let Some(window) = spec_window {
+                    window_of.insert(name.clone(), window);
+                }
+            }
         }
         insert_unique(&mut txs, name.clone(), tx)?;
     }
@@ -252,8 +287,54 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         txs,
         derived: None,
     };
+    if !windows.is_empty() {
+        place_windows(&mut ir, &windows, &window_of)?;
+    }
     ir.derived = Some(derive::derive(&ir)?);
     Ok(ir)
+}
+
+/// Give each tx the window its pattern or the spec covers it with, shifted by
+/// `step` per generation. A `select` that reaches no tx is a mistake, as in a
+/// schedule.
+fn place_windows(
+    ir: &mut Ir,
+    windows: &[(validity::Covering, Option<String>)],
+    window_of: &BTreeMap<String, usize>,
+) -> Result<()> {
+    // Generations need a valid, acyclic graph; derive says what is wrong first.
+    let order = derive::derive(ir)?.topo_order;
+    let generation = derive::generations(ir, &order)?;
+    let mut used = vec![false; windows.len()];
+    for (name, &index) in window_of {
+        let (covering, _) = &windows[index];
+        let tx = ir
+            .txs
+            .get_mut(name)
+            .ok_or_else(|| Error::Graph(format!("missing tx `{name}`")))?;
+        let depth = generation.get(name).copied().unwrap_or(0);
+        tx.validity = covering.for_tx(&tx.labels, depth).map_err(|e| match e {
+            Error::Spec(message) => Error::Spec(format!("tx `{name}`: {message}")),
+            other => other,
+        })?;
+        used[index] |= tx.validity.is_some();
+    }
+    for ((covering, owner), used) in windows.iter().zip(used) {
+        if used {
+            continue;
+        }
+        if let Some(select) = covering.select_text() {
+            return Err(Error::Spec(match owner {
+                Some(id) => {
+                    format!("pattern `{id}`: validity: no transaction it emits has {select}")
+                }
+                None => format!(
+                    "spec: validity: no transaction with {select} takes the spec's validity"
+                ),
+            }));
+        }
+    }
+    Ok(())
 }
 
 /// Metadata, colour and script cost a pattern instance puts on the txs it emits.

@@ -235,6 +235,10 @@
         "use": {
           "const": "branch_merge"
         },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
+        },
         "with": {
           "additionalProperties": false,
           "properties": {
@@ -316,6 +320,10 @@
         },
         "use": {
           "const": "chain"
+        },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
         },
         "with": {
           "additionalProperties": false,
@@ -413,6 +421,10 @@
         "use": {
           "const": "conflict_set"
         },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
+        },
         "with": {
           "additionalProperties": false,
           "properties": {
@@ -494,6 +506,10 @@
         },
         "use": {
           "const": "conflicting_chains"
+        },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
         },
         "with": {
           "additionalProperties": false,
@@ -597,6 +613,10 @@
         "use": {
           "const": "fan_in"
         },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
+        },
         "with": {
           "additionalProperties": false,
           "properties": {
@@ -679,6 +699,10 @@
         "use": {
           "const": "fan_out"
         },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
+        },
         "with": {
           "additionalProperties": false,
           "properties": {
@@ -760,6 +784,10 @@
         },
         "use": {
           "const": "independent"
+        },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
         },
         "with": {
           "additionalProperties": false,
@@ -1025,12 +1053,139 @@
           },
           "type": "array",
           "uniqueItems": true
+        },
+        "validity": {
+          "$ref": "#/$defs/validity",
+          "description": "Validity window of this tx, instead of the spec's."
         }
       },
       "required": [
         "inputs",
         "outputs"
       ],
+      "type": "object"
+    },
+    "validity": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "from"
+          ]
+        },
+        {
+          "required": [
+            "until"
+          ]
+        }
+      ],
+      "description": "When the tx is valid, in slots after the run's start or tip: materialise writes it as the tx's validity interval. `until` must be after `from`.",
+      "minProperties": 1,
+      "properties": {
+        "anchor": {
+          "default": "start",
+          "description": "What `from` and `until` count from: `start`, the slot the schedule starts in (`at: 0ms`), or `tip`, the slot of the tip block then. A node checks a tx against the slot after its tip, which trails the clock by the time since the last block, so `tip` is what edges near 0 mean to a node.",
+          "enum": [
+            "start",
+            "tip"
+          ]
+        },
+        "from": {
+          "description": "First slot the tx is valid in, counted from `anchor`: the ledger's invalid_before. Left out: no lower bound.",
+          "maximum": 1000000000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "until": {
+          "description": "First slot the tx is no longer valid in, counted from `anchor`: the ledger's invalid_hereafter. Left out: no upper bound.",
+          "maximum": 1000000000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "validity_covering": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "from"
+          ]
+        },
+        {
+          "required": [
+            "until"
+          ]
+        }
+      ],
+      "description": "A validity window (see `validity`) for many txs. Values may use params.",
+      "properties": {
+        "anchor": {
+          "default": "start",
+          "description": "What `from` and `until` count from: `start`, the slot the schedule starts in (`at: 0ms`), or `tip`, the slot of the tip block then. A node checks a tx against the slot after its tip, which trails the clock by the time since the last block, so `tip` is what edges near 0 mean to a node.",
+          "enum": [
+            "start",
+            "tip"
+          ]
+        },
+        "from": {
+          "description": "First slot the tx is valid in, counted from `anchor`: the ledger's invalid_before. Left out: no lower bound.",
+          "oneOf": [
+            {
+              "maximum": 1000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "select": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "depth": {
+              "description": "Only txs of this generation: 0 for those that spend only sources (the first tx of a chain), 1 for their children, and so on.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "label": {
+              "description": "Only txs with this label take the window.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "step": {
+          "default": 0,
+          "description": "Slots each generation's window starts later than its parent's: with `until: 4, step: 4`, the first tx of a chain must land within 4 slots, the second within 8, and so on.",
+          "oneOf": [
+            {
+              "maximum": 1000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "until": {
+          "description": "First slot the tx is no longer valid in, counted from `anchor`: the ledger's invalid_hereafter. Left out: no upper bound.",
+          "oneOf": [
+            {
+              "maximum": 1000000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        }
+      },
       "type": "object"
     }
   },
@@ -1103,6 +1258,10 @@
         "pattern": "^[a-z][a-z0-9_]*$"
       },
       "type": "object"
+    },
+    "validity": {
+      "$ref": "#/$defs/validity_covering",
+      "description": "Validity window of every tx (or of those `select` names), unless a pattern or tx sets its own."
     },
     "version": {
       "const": 0,
