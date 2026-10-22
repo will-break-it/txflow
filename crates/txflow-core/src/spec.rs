@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::assets::Policy;
 use crate::cost::CostSpec;
 use crate::error::Result;
 use crate::ir::{Source, Tx};
@@ -42,6 +43,9 @@ pub struct ExperimentSpec {
     /// pattern instance or tx sets its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validity: Option<ValiditySpec>,
+    /// Hand-written minting policies, by name. Patterns that mint add their own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub policies: BTreeMap<String, Policy>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub patterns: Vec<PatternInstance>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

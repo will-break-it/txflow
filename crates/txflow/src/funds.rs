@@ -3,17 +3,20 @@
 //! The pool key holds the site's test ADA. [`split`] pays a fixed amount to
 //! each slot address. A run leases one slot and is funded from that slot's
 //! UTxOs, so runs at the same time never spend the same UTxO. [`sweep`]
-//! returns what a run leaves at its run address to its slot.
+//! returns what a run leaves at its run address to its slot, burning the
+//! native assets the run minted on the way, so a slot only ever holds ADA.
 
 use pallas_crypto::hash::{Hash, Hasher};
 use pallas_crypto::key::ed25519::SecretKey;
 use pallas_txbuilder::Input;
 use serde::Serialize;
 
+use crate::assets::{self, Assets, Policies};
 use crate::context::{NetworkName, OfferedUtxo, ProtocolParams, SecretKeyBytes};
 use crate::error::{Error, Result};
 use crate::materialise::{
-    bech32, build_signed, change_address, key_address, message, watermark, PlannedOutput, TxFormat,
+    bech32, build_signed_minting, change_address, key_address, message, watermark, PlannedOutput,
+    TxFormat,
 };
 
 /// Which run a sweep returns, for its message: the run id and where the run
@@ -25,6 +28,34 @@ pub struct RunTag<'a> {
 
 /// Inputs per sweep transaction, well under the size limit.
 pub const SWEEP_INPUTS: usize = 100;
+
+/// Bytes of burned assets per sweep transaction: what a sweep's mint field
+/// may take, well under the size limit with its inputs.
+pub const SWEEP_BURN_BYTES: usize = 8_000;
+
+/// A UTxO a run left, with the native assets it holds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldUtxo {
+    pub utxo: OfferedUtxo,
+    pub assets: Assets,
+}
+
+impl From<OfferedUtxo> for HeldUtxo {
+    fn from(utxo: OfferedUtxo) -> HeldUtxo {
+        HeldUtxo {
+            utxo,
+            assets: Assets::new(),
+        }
+    }
+}
+
+/// About how many bytes burning `assets` adds to a tx's mint field.
+fn burn_bytes(assets: &Assets) -> usize {
+    assets
+        .values()
+        .map(|names| 31 + names.keys().map(|n| n.len() + 10).sum::<usize>())
+        .sum()
+}
 
 /// A built and signed transaction, ready to submit.
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -69,28 +100,37 @@ pub fn split(
         planned.push(PlannedOutput {
             address: key_address(&key, network.into()),
             lovelace: Some(lovelace),
+            assets: Assets::new(),
         });
     }
     let key = SecretKey::from(pool.0);
     planned.push(PlannedOutput {
         address: key_address(&key, network.into()),
         lovelace: None,
+        assets: Assets::new(),
     });
+    let held: Vec<HeldUtxo> = utxos.iter().cloned().map(HeldUtxo::from).collect();
     transfer(
         &key,
-        utxos,
+        &held,
         &planned,
         &message(&[&watermark("cli"), "split"]),
         pp,
         format,
+        None,
     )
 }
 
 /// Spend every one of `utxos` (held by `key`) to `to`, in as many
-/// transactions as [`SWEEP_INPUTS`] needs. `run` goes in the metadata.
+/// transactions as [`SWEEP_INPUTS`] and [`SWEEP_BURN_BYTES`] need, burning
+/// their native assets under the run's `policies`, so only ADA reaches `to`.
+/// A UTxO holding an asset of any other policy cannot be burned, so it is
+/// left where it is. `run` goes in the metadata.
+#[allow(clippy::too_many_arguments)]
 pub fn sweep(
     key: &SecretKeyBytes,
-    utxos: &[OfferedUtxo],
+    utxos: &[HeldUtxo],
+    policies: &Policies,
     to: &str,
     run: &RunTag,
     network: NetworkName,
@@ -99,12 +139,36 @@ pub fn sweep(
 ) -> Result<Vec<SignedTx>> {
     let to = change_address(to, network.into())?;
     let key = SecretKey::from(key.0);
-    utxos
-        .chunks(SWEEP_INPUTS)
+    let burnable = policies.by_id();
+    let mut chunks: Vec<Vec<HeldUtxo>> = Vec::new();
+    let mut bytes = 0;
+    for utxo in utxos {
+        if !utxo.assets.keys().all(|id| burnable.contains_key(id)) {
+            continue;
+        }
+        let more = burn_bytes(&utxo.assets);
+        match chunks.last_mut() {
+            Some(chunk) if chunk.len() < SWEEP_INPUTS && bytes + more <= SWEEP_BURN_BYTES => {
+                chunk.push(utxo.clone());
+                bytes += more;
+            }
+            _ => {
+                chunks.push(vec![utxo.clone()]);
+                bytes = more;
+            }
+        }
+    }
+    chunks
+        .iter()
         .map(|chunk| {
+            let mut burned = Assets::new();
+            for utxo in chunk {
+                assets::add(&mut burned, &utxo.assets);
+            }
             let planned = [PlannedOutput {
                 address: to.clone(),
                 lovelace: None,
+                assets: Assets::new(),
             }];
             transfer(
                 &key,
@@ -113,6 +177,7 @@ pub fn sweep(
                 &message(&[&watermark(run.origin), "sweep", &format!("run:{}", run.id)]),
                 pp,
                 format,
+                assets::burn_all(&burned, &burnable)?.as_ref(),
             )
         })
         .collect()
@@ -120,20 +185,26 @@ pub fn sweep(
 
 fn transfer(
     key: &SecretKey,
-    utxos: &[OfferedUtxo],
+    utxos: &[HeldUtxo],
     planned: &[PlannedOutput],
     metadata: &[u8],
     pp: &ProtocolParams,
     format: TxFormat,
+    burn: Option<&assets::Minting>,
 ) -> Result<SignedTx> {
     if utxos.is_empty() {
         return Err(Error::Materialise("nothing to spend".to_string()));
     }
     let inputs: Vec<(Input, u64)> = utxos
         .iter()
-        .map(|u| (Input::new(Hash::new(u.tx_id), u.index), u.lovelace))
+        .map(|u| {
+            (
+                Input::new(Hash::new(u.utxo.tx_id), u.utxo.index),
+                u.utxo.lovelace,
+            )
+        })
         .collect();
-    let built = build_signed(&inputs, &[], planned, metadata, key, pp, format)?;
+    let built = build_signed_minting(&inputs, planned, metadata, key, pp, format, burn)?;
     Ok(SignedTx {
         tx_id: hex::encode(built.tx_id),
         fee: built.fee,

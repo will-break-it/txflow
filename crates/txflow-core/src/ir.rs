@@ -5,16 +5,19 @@
 //! orphans and reference contention are derived from those lists by
 //! [`crate::derive`]; they are never declared.
 //!
-//! Transactions are plain payments with metadata. A tx may also carry a
-//! script [`Cost`]: materialise then adds a run of txflow's burner script that
-//! uses that much execution, without changing the graph. It may also carry a
+//! Transactions are payments with metadata. A tx may also carry a script
+//! [`Cost`]: materialise then adds a run of txflow's burner script that uses
+//! that much execution, without changing the graph. It may also carry a
 //! [`Validity`] window, which materialise writes as the tx's validity
-//! interval. No tokens, datums or mint. Unknown fields are rejected so an unsupported feature fails loudly.
+//! interval. A tx may mint or burn native assets under the IR's time-lock
+//! `policies`, and its outputs may hold them (see [`crate::assets`]). No
+//! datums. Unknown fields are rejected so an unsupported feature fails loudly.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::assets::{Mint, Policy, Tokens};
 use crate::cost::Cost;
 use crate::error::{Error, Result};
 use crate::metadata::Metadata;
@@ -26,6 +29,9 @@ use crate::validity::Validity;
 pub struct Ir {
     pub version: u32,
     pub wallets: Vec<String>,
+    /// Minting policies, by name (see [`crate::assets`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub policies: BTreeMap<String, Policy>,
     pub sources: BTreeMap<String, Source>,
     pub txs: BTreeMap<String, Tx>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +55,9 @@ pub struct Tx {
     /// Outputs read but not spent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reference_inputs: Vec<String>,
+    /// Native assets minted (positive) or burned (negative), by `<policy>.<asset>`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mint: Mint,
     pub outputs: Vec<OutputSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
@@ -73,6 +82,10 @@ pub struct OutputSpec {
     /// Owning wallet.
     pub to: String,
     pub lovelace: Amount,
+    /// Native assets it holds, by `<policy>.<asset>`. The `change` output
+    /// lists none: it takes every token the tx's other outputs do not.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: Tokens,
 }
 
 /// How much an output holds.

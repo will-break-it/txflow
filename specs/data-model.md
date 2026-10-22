@@ -36,8 +36,8 @@ validators:                    # optional; scripts that outputs can be locked to
   <name>: { kind: always_succeeds, budget: { mem: <u64>, steps: <u64> }, size: <u32> }
   <name>: { kind: native, script: <native> }   # native: { sig: <wallet> } | { all: [...] } | { any: [...] }
                                                #   | { after_slot_offset: <i64> } | { before_slot_offset: <i64> }
-policies:                      # optional; minting policies
-  <name>: { kind: signed_by, wallet: <wallet> }   # native script, wallet signature
+policies:                      # optional; minting policies, see below
+  <name>: { after_slot: <u64> }  # native script: valid from this slot on, no key
 sources:
   <name>: { owner: <wallet>, lovelace: <u64> }
 txs:
@@ -49,7 +49,7 @@ txs:
     outputs:
       - to: <wallet> | script:<validator>
         lovelace: <u64> | min | change # exactly one `change` per tx
-        tokens: { <policy>.<asset>: <u64> }   # optional
+        tokens: { <policy>.<asset>: <u64> }   # optional; not on the `change` output
         datum: { bytes: <u32> } | { inline: <cbor-hex> }   # optional
         pad_bytes: <u32>               # optional, inflates tx to a target size
     template: { file: <path>.tx3, tx: <name>, args: { ... }, hash: <blake2b256> }  # optional (story 5)
@@ -118,6 +118,44 @@ reserved. `color` is written under 1022 as three bytes of RGB, the form
 only, never on funding or sweep txs, beside the label 674 message in one auxiliary data
 map. Empty `metadata` and a missing `color` are left out of the canonical form, so a
 graph without them hashes as it did before they existed.
+
+**Native assets.** A policy `{ after_slot: N }` is the native script `InvalidBefore N`
+(CBOR `[4, N]`); its policy id is blake2b-224 over a zero byte and that CBOR. It needs no
+signature, so any tx valid from slot N on may mint or burn under it, which is fine on a
+test network and keeps keys and networks out of the IR. Each N is a different script,
+so `after_slot: 1`, `2`, `3`, … give as many distinct policy ids as a spec needs; two
+policies on one slot would be one policy id, and are rejected. A small N is long past
+on any network, so it only tells policies apart.
+
+Assets are written `<policy>.<asset>`: a policy name (namespaced inside a pattern, as
+in `shuffle/p1.a3`) and an asset name of 1 to 32 letters, digits, `_` or `-`, whose
+bytes are the asset's name on chain. `mint` holds non-zero quantities: positive mints,
+negative burns. An output's `tokens` holds positive quantities. Sources hold ADA only,
+so every asset starts at a mint. Expansion walks the graph in topological order and
+works out what every output holds: a tx has what its spent inputs hold plus its mint;
+each output with `tokens` takes those; the `change` output takes everything left, and
+so lists no `tokens` itself. Paying out or burning more than a tx has is an error naming
+the tx and asset. Reference inputs are read, not spent, so they add nothing.
+
+A pattern's policies are numbered within the pattern (`p1`, `p2`, …); expansion gives
+each the next slot from 1 up that no other policy has, in pattern order, so every copy
+of every pattern has its own policy ids and a spec's own `policies` keep their slots.
+Empty `policies`, `mint` and `tokens` are left out of the canonical form.
+
+Materialise adds to every tx that mints or burns the native scripts of the policies it
+uses (in policy id order, so the bytes do not depend on a hash map) and sets its
+validity start to the latest of their slots. `min` outputs and the change are sized for
+their assets: `(160 + output size) * coinsPerUTxOByte`, with the coin counted as nine
+bytes. An output whose value (coin and assets, as CBOR) is larger than the context's
+`maxValueSize` is an error naming the tx and output. On Musashi (5000 bytes) one UTxO
+holds at most 844 assets of one policy with names `a1` to `a844`, or 137 policies of
+one asset each; the merged UTxO of `asset_shuffle` holds `utxos × assets`. A mint tx
+with very many policies hits `maxTxSize` (16384 bytes) first: each policy adds its
+script, its mint entry and its share of the output.
+
+The site's sweep (`funds::sweep`) burns the assets a run leaves at its run address, under the run's own
+policies, and returns only ADA; a UTxO holding an asset of any other policy cannot be
+burned and is left where it is.
 
 **Script cost.** `cost` says how much Plutus execution a transaction carries, not which
 script runs: the load a node takes on to validate it. `cpu` (CPU steps) and `mem` (memory
@@ -212,8 +250,8 @@ validity:                               # optional validity window on every tx (
   anchor: start | tip                   #   default start
   step: <slots|expr>                    #   optional: shift per generation, default 0
   select: { label: <label>, depth: <n> }   # optional: only these txs (either or both)
-validators: { ... }                     # optional, same schema as §2
-policies: { ... }                       # optional, same schema as §2
+validators: { ... }                     # optional, same schema as §2 (not built yet)
+policies: { <name>: { after_slot: <u64> } }   # optional, same schema as §2
 patterns:
   - id: <instance-name>
     use: <pattern>
@@ -270,6 +308,7 @@ more contention inside one instance.
 | `conflicting_chains` | chains `a` and `b` | `length`, `conflict: root \| per_step \| every_k`, `k` |
 | `conflict_set` | `k` txs spending one source | `k` |
 | `branch_merge` | fan-out whose branches one merge joins again | `width` |
+| `asset_shuffle` | `utxos` UTxOs of `assets` native assets each, merged into one and split again shuffled, `rounds` times | `utxos`, `assets`, `policies`, `rounds`, `quantity`, `burn` |
 
 After script support: `order_batch` (`users`, `orders_per_batch`, `batches`, `validator`)
 and `contended_state` (`contenders`, `rounds`, `validator`). Both generate `collateral`
@@ -298,6 +337,7 @@ pparams:                         # or `pparams_file: <path>` to a `cardano-cli q
   max_tx_execution_units: { memory: 16500000, steps: 10000000000 }
   cost_models: { plutus_v3: [100788, 420, ...] }
   protocol_version: { major: 12, minor: 0 }
+  max_value_size: 5000           # read only when a tx mints (maxValueSize)
 slots:                           # optional: what validity windows count from (§2)
   start: <slot>                  #   the slot the schedule starts in
   tip: <slot>                    #   the slot of the tip block then (at most `start`)
@@ -421,6 +461,20 @@ Excerpt from the worked example against the demo context:
   The manifest's `pparams`, their hash and so `run_id` include the Plutus parameters
   only when a tx has a cost, so a run without one does not depend on them: the same spec
   gives the same txs whether the context's pparams file carries them or not.
+- When any tx mints, the manifest lists the policies with their slots and ids, and each
+  tx that mints or burns, or has an output with assets, says so; `max_value_size` is then
+  in `pparams` (and only then):
+
+  ```json
+  "policies": { "shuffle/p1": { "after_slot": 1, "policy_id": "a9640757…" } },
+  ```
+
+  ```json
+  { "name": "shuffle/mint1", "mint": { "shuffle/p1.a1": 1, "shuffle/p2.a2": 1 },
+    "assets": [5], "valid_from_slot": 3, "…": "…" }
+  ```
+
+  `assets` counts the distinct assets each output holds, in output order.
 
 ## 5. Schedule
 

@@ -1,0 +1,80 @@
+version: 0
+wallets:
+- alice
+policies:
+  p/p1:
+    after_slot: 1
+  p/p2:
+    after_slot: 2
+sources:
+  p/s1:
+    owner: alice
+    lovelace: 3594290
+  p/s2:
+    owner: alice
+    lovelace: 3594290
+txs:
+  p/burn:
+    inputs:
+    - p/split1.0
+    - p/split1.1
+    mint:
+      p/p1.a1: -1
+      p/p1.a3: -1
+      p/p1.a5: -1
+      p/p2.a2: -1
+      p/p2.a4: -1
+      p/p2.a6: -1
+    outputs:
+    - to: alice
+      lovelace: change
+  p/merge1:
+    inputs:
+    - p/mint1.0
+    - p/mint2.0
+    outputs:
+    - to: alice
+      lovelace: change
+  p/mint1:
+    inputs:
+    - p/s1
+    mint:
+      p/p1.a1: 1
+      p/p1.a3: 1
+      p/p2.a2: 1
+    outputs:
+    - to: alice
+      lovelace: change
+  p/mint2:
+    inputs:
+    - p/s2
+    mint:
+      p/p1.a5: 1
+      p/p2.a4: 1
+      p/p2.a6: 1
+    outputs:
+    - to: alice
+      lovelace: change
+  p/split1:
+    inputs:
+    - p/merge1.0
+    outputs:
+    - to: alice
+      lovelace: min
+      tokens:
+        p/p1.a5: 1
+        p/p2.a4: 1
+        p/p2.a6: 1
+    - to: alice
+      lovelace: change
+derived:
+  topo_order:
+  - p/mint1
+  - p/mint2
+  - p/merge1
+  - p/split1
+  - p/burn
+  conflict_sets: {}
+  reference_contention: {}
+  orphan_on: {}
+  hash: blake2b256:acba6246b58cc238655e1bdac0f87fffe70f03d4282497a031ee33fb28a2d362

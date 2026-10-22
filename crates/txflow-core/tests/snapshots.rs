@@ -14,6 +14,10 @@ const PATTERNS: &[(&str, &str)] = &[
     ("conflict_set", "{ k: 3 }"),
     ("branch_merge", "{ width: 2, lovelace: 3000000 }"),
     ("conflicting_chains", "{ length: 2, conflict: per_step }"),
+    (
+        "asset_shuffle",
+        "{ utxos: 2, assets: 3, policies: 2, burn: all }",
+    ),
 ];
 
 #[test]

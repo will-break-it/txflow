@@ -128,6 +128,14 @@ pub struct ProtocolParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub protocol_version: Option<ProtocolVersion>,
+    /// The largest value one output may hold, in bytes; read only when a tx
+    /// mints native assets.
+    #[serde(
+        default,
+        alias = "maxValueSize",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_value_size: Option<u64>,
 }
 
 impl ProtocolParams {
@@ -139,6 +147,14 @@ impl ProtocolParams {
             max_tx_execution_units: None,
             cost_models: None,
             protocol_version: None,
+            ..self.clone()
+        }
+    }
+
+    /// These parameters without the one only txs with native assets read.
+    pub fn without_assets(&self) -> ProtocolParams {
+        ProtocolParams {
+            max_value_size: None,
             ..self.clone()
         }
     }

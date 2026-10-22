@@ -222,6 +222,68 @@ pub const PATTERNS: &[PatternInfo] = &[
         ],
         example: "{ length: 3, conflict: per_step }",
     },
+    PatternInfo {
+        name: "asset_shuffle",
+        summary: "UTxOs full of native assets, merged and split again. `mint<i>` mints \
+                  `assets` unique assets into one UTxO each; `merge<r>` spends them all into \
+                  one UTxO holding every asset (fan-in), and `split<r>` pays them back out \
+                  into `utxos` UTxOs with the assets shuffled (fan-out), `rounds` times. \
+                  The assets are spread over `policies` time-lock policies, each its own \
+                  policy id. Tests how the ledger handles large multi-asset values: the \
+                  merged UTxO holds `utxos × assets` assets, and the network's \
+                  maxValueSize caps it: 5000 bytes on Musashi, 844 assets of one policy \
+                  or 137 policies of one asset.",
+        emits: "policies p1..pP; sources s1..sU; txs mint1..mintU (mint<i> spends s<i>), \
+                merge1..mergeR (merge<r> spends every UTxO of the round before), \
+                split1..splitR (split<r> spends merge<r>.0 and pays `utxos` outputs), and \
+                burn with `burn: all`; assets a1..aN, a<j> under p<(j-1) % P + 1>",
+        args: &[
+            ArgInfo {
+                name: "utxos",
+                kind: count(1, 100, 2),
+                summary: "UTxOs minted, and split back into each round.",
+            },
+            ArgInfo {
+                name: "assets",
+                kind: count(1, 1_000, 5),
+                summary: "Unique assets each UTxO holds; the merged UTxO holds \
+                          `utxos × assets`.",
+            },
+            ArgInfo {
+                name: "policies",
+                kind: count(1, 1_000, 1),
+                summary: "Distinct minting policies the assets are spread over, round \
+                          robin. Each is a native script valid after its own slot (1, 2, 3, \
+                          …), so each has its own policy id.",
+            },
+            ArgInfo {
+                name: "rounds",
+                kind: count(1, 100, 1),
+                summary: "Merge-and-split rounds; each round shuffles differently.",
+            },
+            ArgInfo {
+                name: "quantity",
+                kind: count(1, 1_000_000_000_000, 1),
+                summary: "How many of each asset are minted and moved.",
+            },
+            ArgInfo {
+                name: "burn",
+                kind: ArgKind::Choice {
+                    values: &["none", "all"],
+                },
+                summary: "`all`: a last tx `burn` spends every UTxO and burns every asset, \
+                          leaving ADA only. `none`: the assets stay.",
+            },
+            ArgInfo {
+                name: "lovelace",
+                kind: ArgKind::Lovelace {
+                    default: "enough for the fees and every UTxO's min-UTxO with its assets",
+                },
+                summary: "Value of each UTxO's source.",
+            },
+        ],
+        example: "{ utxos: 2, assets: 5, policies: 3 }",
+    },
 ];
 
 /// The catalogue entry for `name`.

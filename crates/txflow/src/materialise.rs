@@ -12,6 +12,13 @@
 //! output the script txs share; none of them is in the IR, so they add no
 //! conflicts. Every script run is evaluated before the manifest is written,
 //! and its measured cost is what the tx declares.
+//!
+//! A tx that mints or burns carries the native scripts of the policies it
+//! uses ([`crate::assets`]) and is valid from the latest of their slots. The
+//! tokens each output holds come from the IR's value flow
+//! ([`txflow_core::assets::flow`]), so the `change` output takes the tokens
+//! left over as it takes the leftover ADA; `min` outputs and the change are
+//! sized for their tokens, and no output may hold more than maxValueSize.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +34,7 @@ use pallas_txbuilder::{BuildConway, Input, Output, StagingTransaction};
 use pallas_txbuilder::{Bytes, Bytes32, ExUnits, ScriptKind};
 use serde::Serialize;
 
+use crate::assets::{self, Assets, ManifestPolicy, Minting, Policies};
 use crate::burner::{self, Calibration, Knobs, Units};
 use crate::context::{
     ChainContext, NetworkName, OfferedUtxo, ProtocolParams, RunSlots, SecretKeyBytes,
@@ -35,6 +43,7 @@ use crate::derive;
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Ir, Tx};
 use crate::metadata::{auxiliary_data, Metadata};
+use txflow_core::assets::Mint;
 use txflow_core::cost::Cost;
 use txflow_core::validity::Validity;
 
@@ -102,6 +111,9 @@ pub struct Manifest {
     /// experiment txs again for a later start and fund the same way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slots: Option<RunSlots>,
+    /// The IR's minting policies, with their slots and policy ids.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub policies: BTreeMap<String, ManifestPolicy>,
     pub txs: Vec<ManifestTx>,
 }
 
@@ -198,6 +210,16 @@ pub struct ManifestTx {
     /// Txs with a validity window: the window asked for and its slots.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validity: Option<ManifestValidity>,
+    /// Native assets minted (positive) or burned (negative), as in the IR.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub mint: Mint,
+    /// How many distinct native assets each output holds, in output order;
+    /// empty when none holds any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<usize>,
+    /// The first slot the tx is valid in, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_from_slot: Option<u64>,
     pub cbor_hex: String,
 }
 
@@ -223,6 +245,8 @@ pub(crate) struct PlannedOutput {
     pub(crate) address: Address,
     /// `None` for the change output.
     pub(crate) lovelace: Option<u64>,
+    /// Native assets it holds.
+    pub(crate) assets: Assets,
 }
 
 /// What [`build_signed`] returns.
@@ -405,11 +429,30 @@ pub fn materialise(
     } else {
         Some(script_setup(pp, network)?)
     };
+    // Native assets: the policies' scripts, and what each output holds.
+    let policies = Policies::of(ir);
+    let minting = ir.txs.values().any(|tx| !tx.mint.is_empty());
+    let tokens_of = txflow_core::assets::flow(ir, &derived.topo_order)?;
+    let max_value_size = match minting {
+        true => Some(pp.max_value_size.ok_or_else(|| {
+            Error::Context(
+                "txs that mint native assets need `maxValueSize` in the protocol parameters \
+                 (`cardano-cli query protocol-parameters` prints it)"
+                    .to_string(),
+            )
+        })?),
+        false => None,
+    };
     // The parameters the run depends on: the script ones only when a tx runs
-    // a script, so a run without one keeps its id whatever else the context holds.
+    // a script and the value size only when one mints, so a run without them
+    // keeps its id whatever else the context holds.
     let recorded = match setup {
         Some(_) => pp.clone(),
         None => pp.without_scripts(),
+    };
+    let recorded = match minting {
+        true => recorded,
+        false => recorded.without_assets(),
     };
 
     // Each script tx's target, the burner's knobs for it, and their fee, in
@@ -532,6 +575,7 @@ pub fn materialise(
             .map(|(_, lovelace, address)| PlannedOutput {
                 address: address.clone(),
                 lovelace: Some(*lovelace),
+                assets: Assets::new(),
             })
             .collect();
         let change_to = if k + 1 == chunks.len() {
@@ -542,6 +586,7 @@ pub fn materialise(
         planned.push(PlannedOutput {
             address: change_to.clone(),
             lovelace: None,
+            assets: Assets::new(),
         });
         let built = build_signed(
             &carry,
@@ -597,24 +642,34 @@ pub fn materialise(
             .map(|(input, _)| input.clone())
             .collect();
         let mut planned = Vec::new();
-        for output in &tx.outputs {
+        for (i, output) in tx.outputs.iter().enumerate() {
+            let held = match tokens_of.get(&format!("{name}.{i}")) {
+                Some(tokens) => policies.assets(tokens).map_err(|e| in_tx(name, e))?,
+                None => Assets::new(),
+            };
+            let min = match held.is_empty() {
+                true => min_lovelace,
+                false => assets::min_lovelace(&run_address, &held, pp)?,
+            };
             let lovelace = match output.lovelace {
                 Amount::Fixed(l) => {
-                    if l < min_lovelace {
+                    if l < min {
                         return Err(Error::Materialise(format!(
-                            "tx `{name}`: output of {l} lovelace is below the minimum {min_lovelace}"
+                            "tx `{name}`: output of {l} lovelace is below the minimum {min}"
                         )));
                     }
                     Some(l)
                 }
-                Amount::Keyword(AmountKeyword::Min) => Some(min_lovelace),
+                Amount::Keyword(AmountKeyword::Min) => Some(min),
                 Amount::Keyword(AmountKeyword::Change) => None,
             };
             planned.push(PlannedOutput {
                 address: run_address.clone(),
                 lovelace,
+                assets: held,
             });
         }
+        let mint = policies.minting(&tx.mint).map_err(|e| in_tx(name, e))?;
         let mut input_refs = tx.inputs.clone();
         let run = match (plan_of.get(name), &setup) {
             (Some(plan), Some(setup)) => {
@@ -653,23 +708,54 @@ pub fn materialise(
             format,
             run.as_ref().map(|(_, _, run)| run),
             window_of.get(name).map(|(_, window)| window),
+            mint.as_ref(),
         )
         .map_err(|e| in_tx(name, e))?;
+        if let Some(max) = max_value_size {
+            for (i, (output, lovelace)) in planned.iter().zip(&built.outputs).enumerate() {
+                let size = assets::value_size(*lovelace, &output.assets)?;
+                if size > max {
+                    return Err(in_tx(
+                        name,
+                        Error::Materialise(format!(
+                            "output {i} holds {} assets in a value of {size} bytes; the \
+                             network allows at most {max} (maxValueSize)",
+                            assets::count(&output.assets)
+                        )),
+                    ));
+                }
+            }
+        }
         let mut cost_entry = None;
         let mut collateral_entry = None;
         if let (Some((requested, target, run)), Some(setup)) = (&run, &setup) {
             // Every input the evaluator needs, with the address it sits at.
-            let mut resolved_inputs: Vec<(Input, u64, &Address)> = Vec::new();
-            for (input, lovelace) in inputs.iter().chain(reference_inputs.iter()) {
+            let mut resolved_inputs: Vec<(Input, u64, &Address, Assets)> = Vec::new();
+            for (reference, (input, lovelace)) in tx
+                .inputs
+                .iter()
+                .chain(std::iter::once(&fuel_name(name)))
+                .chain(tx.reference_inputs.iter())
+                .zip(inputs.iter().chain(reference_inputs.iter()))
+            {
                 let address = if *input == run.fuel {
                     &setup.address
                 } else {
                     &run_address
                 };
-                resolved_inputs.push((input.clone(), *lovelace, address));
+                let held = match tokens_of.get(reference) {
+                    Some(tokens) => policies.assets(tokens)?,
+                    None => Assets::new(),
+                };
+                resolved_inputs.push((input.clone(), *lovelace, address, held));
             }
             let collateral_lovelace = utxos.get(COLLATERAL).map(|(_, l)| *l).unwrap_or(0);
-            resolved_inputs.push((run.collateral.clone(), collateral_lovelace, &run_address));
+            resolved_inputs.push((
+                run.collateral.clone(),
+                collateral_lovelace,
+                &run_address,
+                Assets::new(),
+            ));
             let measured = measure(&built.conway_bytes, &resolved_inputs, setup)
                 .map_err(|e| in_tx(name, e))?;
             if measured != run.units {
@@ -717,6 +803,15 @@ pub fn materialise(
                 requested: *requested,
                 window: *window,
             });
+        entry.mint = tx.mint.clone();
+        if planned.iter().any(|o| !o.assets.is_empty()) {
+            entry.assets = planned.iter().map(|o| assets::count(&o.assets)).collect();
+        }
+        // A window's own lower bound and the policies' slot: the later wins.
+        let window_from = window_of.get(name).and_then(|(_, w)| w.invalid_before);
+        entry.valid_from_slot = mint
+            .as_ref()
+            .map(|m| window_from.map_or(m.valid_from, |slot| slot.max(m.valid_from)));
         entry.conflict_sets = member_of
             .get(name.as_str())
             .map(|sets| sets.iter().cloned().collect())
@@ -759,6 +854,7 @@ pub fn materialise(
             None => None,
         },
         slots: (!window_of.is_empty()).then_some(context.slots),
+        policies: policies.manifest(),
         txs,
     })
 }
@@ -895,12 +991,16 @@ fn collateral_lovelace(pp: &ProtocolParams, setup: &ScriptSetup) -> Result<u64> 
 }
 
 /// Evaluate the tx's script run with the Plutus evaluator and return what it used.
-fn measure(conway: &[u8], inputs: &[(Input, u64, &Address)], setup: &ScriptSetup) -> Result<Units> {
+fn measure(
+    conway: &[u8],
+    inputs: &[(Input, u64, &Address, Assets)],
+    setup: &ScriptSetup,
+) -> Result<Units> {
     let encode = |e: minicbor::encode::Error<std::convert::Infallible>| {
         Error::Materialise(format!("encoding a resolved input: {e}"))
     };
     let mut utxos: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for (input, lovelace, address) in inputs {
+    for (input, lovelace, address, held) in inputs {
         let key = conway::TransactionInput {
             transaction_id: Hash::new(input.tx_hash.0),
             index: input.txo_index,
@@ -908,7 +1008,7 @@ fn measure(conway: &[u8], inputs: &[(Input, u64, &Address)], setup: &ScriptSetup
         let value = conway::TransactionOutput::PostAlonzo(KeepRaw::from(
             conway::PostAlonzoTransactionOutput {
                 address: address.to_vec().into(),
-                value: conway::Value::Coin(*lovelace),
+                value: assets::value(*lovelace, held)?,
                 datum_option: None,
                 script_ref: None,
             },
@@ -1194,6 +1294,11 @@ fn pparams_hash(pp: &ProtocolParams) -> String {
         let json = serde_json::to_vec(&script).unwrap_or_default();
         hasher.input(&json);
     }
+    // Likewise the value size, read only when a tx mints.
+    if let Some(size) = pp.max_value_size {
+        hasher.input(b"max_value_size");
+        hasher.input(&size.to_be_bytes());
+    }
     format!("blake2b256:{}", hex::encode(hasher.finalize()))
 }
 
@@ -1226,13 +1331,41 @@ pub(crate) fn build_signed(
         format,
         None,
         None,
+        None,
+    )
+}
+
+/// [`build_signed`] with the mint (or burn) part of a tx.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_signed_minting(
+    inputs: &[(Input, u64)],
+    planned: &[PlannedOutput],
+    metadata: &[u8],
+    key: &SecretKey,
+    pp: &ProtocolParams,
+    format: TxFormat,
+    minting: Option<&Minting>,
+) -> Result<Built> {
+    build_signed_with(
+        inputs,
+        &[],
+        planned,
+        metadata,
+        key,
+        pp,
+        format,
+        None,
+        None,
+        minting,
     )
 }
 
 /// [`build_signed`], with a script run when `script` is given: the burner as
 /// a witness, the redeemer on the fuel input, the collateral, the script data
 /// hash, and the script's execution fee on top of the size fee. `window`, when
-/// given, is the tx's validity interval.
+/// given, is the tx's validity interval. With `minting`, the tx mints or
+/// burns, carries the policies' native scripts and is valid from their latest
+/// slot, or from the window's start if that is later.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_signed_with(
     inputs: &[(Input, u64)],
@@ -1244,9 +1377,11 @@ pub(crate) fn build_signed_with(
     format: TxFormat,
     script: Option<&ScriptRun>,
     window: Option<&Window>,
+    minting: Option<&Minting>,
 ) -> Result<Built> {
     let min_change = match planned.iter().find(|o| o.lovelace.is_none()) {
-        Some(change) => min_for(&change.address, pp)?,
+        Some(change) if change.assets.is_empty() => min_for(&change.address, pp)?,
+        Some(change) => assets::min_lovelace(&change.address, &change.assets, pp)?,
         None => return Err(Error::Materialise("no change output".to_string())),
     };
     let total_in = inputs
@@ -1290,16 +1425,37 @@ pub(crate) fn build_signed_with(
         for output in planned {
             let lovelace = output.lovelace.unwrap_or(change);
             amounts.push(lovelace);
-            staging = staging.output(Output::new(output.address.clone(), lovelace));
+            let mut built = Output::new(output.address.clone(), lovelace);
+            for (id, names) in &output.assets {
+                for (name, quantity) in names {
+                    built = built
+                        .add_asset(Hash::new(*id), name.clone(), *quantity)
+                        .map_err(|e| Error::Materialise(format!("build: {e}")))?;
+                }
+            }
+            staging = staging.output(built);
         }
         let mut staging = staging.fee(fee).add_auxiliary_data(metadata.to_vec());
-        if let Some(window) = window {
-            if let Some(slot) = window.invalid_before {
-                staging = staging.valid_from_slot(slot);
+        let mut valid_from = window.and_then(|w| w.invalid_before);
+        if let Some(minting) = minting {
+            for (id, names) in &minting.mint {
+                for (name, quantity) in names {
+                    staging = staging
+                        .mint_asset(Hash::new(*id), name.clone(), *quantity)
+                        .map_err(|e| Error::Materialise(format!("build: {e}")))?;
+                }
             }
-            if let Some(slot) = window.invalid_hereafter {
-                staging = staging.invalid_from_slot(slot);
+            for script in &minting.scripts {
+                staging = staging.script(ScriptKind::Native, script.clone());
             }
+            valid_from =
+                Some(valid_from.map_or(minting.valid_from, |slot| slot.max(minting.valid_from)));
+        }
+        if let Some(slot) = window.and_then(|w| w.invalid_hereafter) {
+            staging = staging.invalid_from_slot(slot);
+        }
+        if let Some(slot) = valid_from {
+            staging = staging.valid_from_slot(slot);
         }
         if let Some(run) = script {
             staging = staging
@@ -1329,6 +1485,9 @@ pub(crate) fn build_signed_with(
             let (tx, body_hash) = redeemers_as_map(&unsigned.tx_bytes.0, run.cost_model)?;
             unsigned.tx_bytes = Bytes(tx);
             unsigned.tx_hash = Bytes32(body_hash);
+        }
+        if minting.is_some_and(|m| m.scripts.len() > 1) {
+            unsigned.tx_bytes = Bytes(sort_native_scripts(&unsigned.tx_bytes.0)?);
         }
         let signed = unsigned
             .sign(key)
@@ -1424,6 +1583,32 @@ fn redeemers_as_map(tx: &[u8], cost_model: &[i64]) -> Result<(Vec<u8>, [u8; 32])
     Ok((bytes, *body_hash))
 }
 
+/// Pallas keeps a tx's scripts in a hash map, so several native scripts come
+/// out in any order. List them by policy id, so the same tx always has the
+/// same bytes. The body, and so the tx id, does not change.
+fn sort_native_scripts(tx: &[u8]) -> Result<Vec<u8>> {
+    let bad = |what: &str| Error::Materialise(format!("ordering the native scripts: {what}"));
+    let conway::Tx {
+        transaction_body,
+        transaction_witness_set,
+        success,
+        auxiliary_data,
+    } = minicbor::decode(tx).map_err(|e| bad(&format!("decode: {e}")))?;
+    let mut witnesses = transaction_witness_set.unwrap();
+    if let Some(scripts) = witnesses.native_script.take() {
+        let mut scripts: Vec<_> = scripts.to_vec();
+        scripts.sort_by_key(|s| assets::script_hash(s.raw_cbor()));
+        witnesses.native_script = conway::NonEmptySet::from_vec(scripts);
+    }
+    let rebuilt = conway::Tx {
+        transaction_body,
+        transaction_witness_set: KeepRaw::from(witnesses),
+        success,
+        auxiliary_data,
+    };
+    minicbor::to_vec(&rebuilt).map_err(|e| bad(&format!("encode: {e}")))
+}
+
 fn manifest_tx(
     index: usize,
     name: &str,
@@ -1450,6 +1635,9 @@ fn manifest_tx(
         collateral: None,
         cost: None,
         validity: None,
+        mint: Mint::new(),
+        assets: vec![],
+        valid_from_slot: None,
         cbor_hex: hex::encode(&built.bytes),
     }
 }

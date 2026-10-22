@@ -165,6 +165,17 @@
           "description": "Owning wallet.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
+        },
+        "tokens": {
+          "additionalProperties": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "description": "Native assets this output holds, by `<policy>.<asset>`. Not on the `change` output, which takes every token left.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*\\.[A-Za-z0-9_-]{1,32}$"
+          },
+          "type": "object"
         }
       },
       "required": [
@@ -195,8 +206,161 @@
         },
         {
           "$ref": "#/$defs/pattern_conflicting_chains"
+        },
+        {
+          "$ref": "#/$defs/pattern_asset_shuffle"
         }
       ]
+    },
+    "pattern_asset_shuffle": {
+      "additionalProperties": false,
+      "description": "UTxOs full of native assets, merged and split again. `mint<i>` mints `assets` unique assets into one UTxO each; `merge<r>` spends them all into one UTxO holding every asset (fan-in), and `split<r>` pays them back out into `utxos` UTxOs with the assets shuffled (fan-out), `rounds` times. The assets are spread over `policies` time-lock policies, each its own policy id. Tests how the ledger handles large multi-asset values: the merged UTxO holds `utxos × assets` assets, and the network's maxValueSize caps it: 5000 bytes on Musashi, 844 assets of one policy or 137 policies of one asset. Emits: policies p1..pP; sources s1..sU; txs mint1..mintU (mint<i> spends s<i>), merge1..mergeR (merge<r> spends every UTxO of the round before), split1..splitR (split<r> spends merge<r>.0 and pays `utxos` outputs), and burn with `burn: all`; assets a1..aN, a<j> under p<(j-1) % P + 1>.",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/color",
+          "description": "Colour tag on every tx this instance emits, over the spec's."
+        },
+        "cost": {
+          "$ref": "#/$defs/cost_covering",
+          "description": "Script cost of every tx this instance emits (or of those with `select.label`), instead of the spec's."
+        },
+        "count": {
+          "description": "Independent copies, named `<id>_0/`, `<id>_1/`, …",
+          "oneOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/arg_text"
+            }
+          ]
+        },
+        "id": {
+          "description": "Instance name; prefixes everything it emits.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata",
+          "description": "Transaction metadata on every tx this instance emits, over the spec's."
+        },
+        "use": {
+          "const": "asset_shuffle"
+        },
+        "validity": {
+          "$ref": "#/$defs/validity_covering",
+          "description": "Validity window of every tx this instance emits (or of those `select` names), instead of the spec's."
+        },
+        "with": {
+          "additionalProperties": false,
+          "properties": {
+            "assets": {
+              "default": 5,
+              "description": "Unique assets each UTxO holds; the merged UTxO holds `utxos × assets`.",
+              "oneOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "burn": {
+              "default": "none",
+              "description": "`all`: a last tx `burn` spends every UTxO and burns every asset, leaving ADA only. `none`: the assets stay.",
+              "enum": [
+                "none",
+                "all"
+              ]
+            },
+            "lovelace": {
+              "description": "Value of each UTxO's source. Default: enough for the fees and every UTxO's min-UTxO with its assets.",
+              "oneOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "policies": {
+              "default": 1,
+              "description": "Distinct minting policies the assets are spread over, round robin. Each is a native script valid after its own slot (1, 2, 3, …), so each has its own policy id.",
+              "oneOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "quantity": {
+              "default": 1,
+              "description": "How many of each asset are minted and moved.",
+              "oneOf": [
+                {
+                  "maximum": 1000000000000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "rounds": {
+              "default": 1,
+              "description": "Merge-and-split rounds; each round shuffles differently.",
+              "oneOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "utxos": {
+              "default": 2,
+              "description": "UTxOs minted, and split back into each round.",
+              "oneOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "$ref": "#/$defs/arg_text"
+                }
+              ]
+            },
+            "wallet": {
+              "description": "Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "use"
+      ],
+      "title": "asset_shuffle",
+      "type": "object"
     },
     "pattern_branch_merge": {
       "additionalProperties": false,
@@ -848,6 +1012,21 @@
       "title": "independent",
       "type": "object"
     },
+    "policy": {
+      "additionalProperties": false,
+      "description": "A minting policy: a native script that lets any tx valid from slot `after_slot` on mint or burn under it. Each slot is a different script, so a different policy id. No key is needed, so anyone can use it: for test networks.",
+      "properties": {
+        "after_slot": {
+          "description": "The first slot a tx using the policy may be valid in. A small number (1, 2, 3, …) is long past, so it only tells policies apart.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "after_slot"
+      ],
+      "type": "object"
+    },
     "schedule": {
       "additionalProperties": false,
       "description": "Where and when each transaction is sent. Without a schedule nothing is submitted; the graph can still be built and checked.",
@@ -1036,6 +1215,19 @@
         "metadata": {
           "$ref": "#/$defs/metadata",
           "description": "Transaction metadata on this tx, over the spec's."
+        },
+        "mint": {
+          "additionalProperties": {
+            "not": {
+              "const": 0
+            },
+            "type": "integer"
+          },
+          "description": "Native assets minted (a positive number) or burned (a negative one), by `<policy>.<asset>`. What the tx's other outputs do not hold goes to its `change` output.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*\\.[A-Za-z0-9_-]{1,32}$"
+          },
+          "type": "object"
         },
         "outputs": {
           "description": "Exactly one output must be `change`.",
@@ -1230,6 +1422,16 @@
         "$ref": "#/$defs/pattern"
       },
       "type": "array"
+    },
+    "policies": {
+      "additionalProperties": {
+        "$ref": "#/$defs/policy"
+      },
+      "description": "Hand-written minting policies, by name, for `mint` and `tokens` in `txs`. Patterns that mint bring their own.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
     },
     "schedule": {
       "$ref": "#/$defs/schedule"

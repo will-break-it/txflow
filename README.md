@@ -64,7 +64,11 @@ one runs a script that uses that much
 ([example](examples/heavy-conflicting-pairs.yaml)). Give them a `validity`
 window such as `{ until: 3, anchor: tip }`, in slots after the run's start or its
 tip, and chain short-lived txs with a `step` per generation
-([example](examples/expiring-chain.yaml)). Every field is in the
+([example](examples/expiring-chain.yaml)). Mint and burn native assets
+under time-lock `policies`, each its own policy id, and move UTxOs that hold
+hundreds of them: `asset_shuffle` mints them, merges the UTxOs into one and
+splits it again with the assets shuffled
+([example](examples/asset-shuffle.yaml)). Every field is in the
 [spec reference](https://txflow.fun/spec.html); the JSON Schema is at
 [txflow.fun/schema/v0.json](https://txflow.fun/schema/v0.json) (source in
 [`core/schema/v0/`](schema/v0/)).
