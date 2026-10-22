@@ -27,6 +27,21 @@ pub struct Network {
     /// Where the page links a transaction id, when the network has an explorer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explorer: Option<Explorer>,
+    /// The network's slot clock, from its Shelley genesis, when every slot
+    /// since genesis has the same length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<Slots>,
+}
+
+/// When slot 0 began and how long a slot lasts: `systemStart` and
+/// `slotLength` of the network's Shelley genesis, for a network that starts
+/// in a Shelley-based era. A network that is restarted gets a new start.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Slots {
+    /// UTC `YYYY-MM-DDTHH:MM:SSZ`.
+    pub start: String,
+    pub length_ms: u64,
 }
 
 /// A block explorer for the network.
@@ -118,6 +133,15 @@ impl Network {
                         relay.id
                     )));
                 }
+            }
+        }
+        if let Some(slots) = &network.slots {
+            if !is_utc_instant(&slots.start) || slots.length_ms == 0 {
+                return Err(Error::Spec(format!(
+                    "network file: `slots` needs `start` as UTC YYYY-MM-DDTHH:MM:SSZ and a \
+                     `length_ms` above 0, has {:?} and {}",
+                    slots.start, slots.length_ms
+                )));
             }
         }
         if let Some(explorer) = &network.explorer {

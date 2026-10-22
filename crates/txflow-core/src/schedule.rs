@@ -410,7 +410,7 @@ pub fn duration(text: &str) -> std::result::Result<u64, String> {
         .ok_or_else(|| format!("`{text}` is longer than one hour"))
 }
 
-fn show_ms(ms: u64) -> String {
+pub(crate) fn show_ms(ms: u64) -> String {
     if ms > 0 && ms.is_multiple_of(1000) {
         format!("{}s", ms / 1000)
     } else {

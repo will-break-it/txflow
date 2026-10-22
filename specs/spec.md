@@ -348,6 +348,18 @@ names.
   MUST fail rather than build a transaction whose measured cost differs from the one it
   was built and priced for (data model §2).
 
+**Validity windows**
+
+- **FR-031**: A spec MUST be able to give transactions a validity window (`validity`:
+  `from` and/or `until` in slots, counted from the run's start or from its tip then) on
+  the spec, a pattern instance or a transaction, and on the spec and pattern instances
+  shift it per generation (`step`) and limit it to txs by label or generation (`select`).
+  Materialise MUST write it as the transaction's validity interval against the start and
+  tip slots in the chain context, MUST fail naming the transaction when the context lacks
+  the slot a window counts from, and MUST build the same funding transactions and run id
+  whatever those slots are, so a run can build its experiment transactions when it knows
+  when it starts (data model §2).
+
 ### Key Entities
 
 - **Experiment spec**: what a person writes or the importer produces. Parameters,

@@ -1,0 +1,48 @@
+# Validation work that goes stale. Three chains of five txs go to Frankfurt
+# at once, 100 ms apart. The node checks each one against its ledger as it
+# takes it into its mempool, and a block comes about every 20 s on Musashi.
+#
+# - `doomed`: the first tx is valid only until 3 slots after the tip the run
+#   starts from; the four after it carry no window of their own. The node
+#   admits all five, but almost surely no block comes in time: the first
+#   expires, and its descendants lose their input with it. How soon the node
+#   drops them (at the next block, or only when the mempool is next
+#   revalidated) is what this measures.
+# - `ladder`: every tx is short-lived, each 25 slots more than its parent
+#   (`step` shifts a window by generation), so the chain lasts only while
+#   each block carries the next tx in time.
+# - `control`: the same chain with no window, for when a block would have
+#   carried them.
+#
+# Windows count in slots from `anchor`: `tip` is the slot of the tip block
+# when the schedule starts, the clock a node checks a tx against (the slot
+# after its tip); `start`, the default, is the slot the schedule starts in.
+# Materialise needs them in the context's `slots`:
+#   txflow materialise examples/expiring-chain.yaml --context examples/demo-context.yaml
+version: 0
+experiment: expiring-chain
+seed: 7
+params:
+  ttl: 3
+wallets:
+  alice: {}
+patterns:
+  - id: doomed
+    use: chain
+    with: { length: 5 }
+    color: d9480f
+    validity: { until: "{{ ttl }}", anchor: tip, select: { depth: 0 } }
+  - id: ladder
+    use: chain
+    with: { length: 5 }
+    color: 1971c2
+    validity: { until: 25, step: 25, anchor: tip }
+  - id: control
+    use: chain
+    with: { length: 5 }
+    color: 2f9e44
+schedule:
+  releases:
+    - { select: { pattern: doomed }, target: frankfurt, at: 0ms, spacing: 100ms }
+    - { select: { pattern: ladder }, target: frankfurt, at: 0ms, spacing: 100ms }
+    - { select: { pattern: control }, target: frankfurt, at: 0ms, spacing: 100ms }

@@ -108,6 +108,11 @@ pub fn schema() -> Value {
                 "description": "Script cost of every tx (or of those with `select.label`), \
                     unless a pattern or tx sets its own."
             },
+            "validity": {
+                "$ref": "#/$defs/validity_covering",
+                "description": "Validity window of every tx (or of those `select` names), \
+                    unless a pattern or tx sets its own."
+            },
             "schedule": { "$ref": "#/$defs/schedule" },
             "expect": {
                 "description": "Expected outcomes. Carried, not yet interpreted."
@@ -191,6 +196,10 @@ fn defs() -> Value {
                 "cost": {
                     "$ref": "#/$defs/cost",
                     "description": "Script cost of this tx, instead of the spec's."
+                },
+                "validity": {
+                    "$ref": "#/$defs/validity",
+                    "description": "Validity window of this tx, instead of the spec's."
                 }
             }
         }),
@@ -269,6 +278,7 @@ fn defs() -> Value {
         }),
     );
     cost_defs(&mut defs);
+    validity_defs(&mut defs);
     defs.insert("schedule".to_string(), schedule_schema());
     Value::Object(defs)
 }
@@ -474,6 +484,96 @@ fn cost_defs(defs: &mut Map<String, Value>) {
     );
 }
 
+fn validity_defs(defs: &mut Map<String, Value>) {
+    let max = crate::validity::MAX_OFFSET;
+    let described = |value: &Value, text: &str| {
+        let mut value = value.clone();
+        if let Some(object) = value.as_object_mut() {
+            object.insert("description".to_string(), Value::String(text.to_string()));
+        }
+        value
+    };
+    let edges = |value: Value| {
+        json!({
+            "from": described(&value, "First slot the tx is valid in, counted from `anchor`: \
+                the ledger's invalid_before. Left out: no lower bound."),
+            "until": described(&value, "First slot the tx is no longer valid in, counted \
+                from `anchor`: the ledger's invalid_hereafter. Left out: no upper bound."),
+            "anchor": {
+                "enum": ["start", "tip"],
+                "default": "start",
+                "description": "What `from` and `until` count from: `start`, the slot the \
+                    schedule starts in (`at: 0ms`), or `tip`, the slot of the tip block \
+                    then. A node checks a tx against the slot after its tip, which trails \
+                    the clock by the time since the last block, so `tip` is what edges \
+                    near 0 mean to a node."
+            }
+        })
+    };
+    let slots = json!({ "type": "integer", "minimum": 0, "maximum": max });
+    defs.insert(
+        "validity".to_string(),
+        json!({
+            "type": "object",
+            "description": "When the tx is valid, in slots after the run's start or tip: \
+                materialise writes it as the tx's validity interval. `until` must be after \
+                `from`.",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "anyOf": [{ "required": ["from"] }, { "required": ["until"] }],
+            "properties": edges(slots.clone())
+        }),
+    );
+    let text = json!({
+        "oneOf": [slots, { "$ref": "#/$defs/arg_text" }]
+    });
+    let mut covering = edges(text.clone());
+    if let Some(properties) = covering.as_object_mut() {
+        properties.insert(
+            "step".to_string(),
+            json!({
+                "oneOf": text["oneOf"].clone(),
+                "default": 0,
+                "description": "Slots each generation's window starts later than its \
+                    parent's: with `until: 4, step: 4`, the first tx of a chain must land \
+                    within 4 slots, the second within 8, and so on."
+            }),
+        );
+        properties.insert(
+            "select".to_string(),
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Only txs with this label take the window."
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Only txs of this generation: 0 for those that \
+                            spend only sources (the first tx of a chain), 1 for their \
+                            children, and so on."
+                    }
+                }
+            }),
+        );
+    }
+    defs.insert(
+        "validity_covering".to_string(),
+        json!({
+            "type": "object",
+            "description": "A validity window (see `validity`) for many txs. Values may \
+                use params.",
+            "additionalProperties": false,
+            "anyOf": [{ "required": ["from"] }, { "required": ["until"] }],
+            "properties": covering
+        }),
+    );
+}
+
 fn pattern_schema(pattern: &PatternInfo) -> Value {
     let mut args = Map::new();
     for arg in pattern.args.iter().chain(COMMON_ARGS) {
@@ -546,6 +646,11 @@ fn pattern_schema(pattern: &PatternInfo) -> Value {
                 "$ref": "#/$defs/cost_covering",
                 "description": "Script cost of every tx this instance emits (or of those \
                     with `select.label`), instead of the spec's."
+            },
+            "validity": {
+                "$ref": "#/$defs/validity_covering",
+                "description": "Validity window of every tx this instance emits (or of \
+                    those `select` names), instead of the spec's."
             }
         }
     })

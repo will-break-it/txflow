@@ -28,12 +28,15 @@ use pallas_txbuilder::{Bytes, Bytes32, ExUnits, ScriptKind};
 use serde::Serialize;
 
 use crate::burner::{self, Calibration, Knobs, Units};
-use crate::context::{ChainContext, NetworkName, OfferedUtxo, ProtocolParams, SecretKeyBytes};
+use crate::context::{
+    ChainContext, NetworkName, OfferedUtxo, ProtocolParams, RunSlots, SecretKeyBytes,
+};
 use crate::derive;
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Ir, Tx};
 use crate::metadata::{auxiliary_data, Metadata};
 use txflow_core::cost::Cost;
+use txflow_core::validity::Validity;
 
 /// CIP-20 transaction message label, used to attribute txs on chain.
 pub const METADATA_LABEL: u64 = txflow_core::metadata::MESSAGE_LABEL;
@@ -94,7 +97,32 @@ pub struct Manifest {
     /// The burner script, when any tx has a script cost.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub burner: Option<BurnerInfo>,
+    /// The slots validity windows count from, when any tx has one. Not part
+    /// of `run_id`: funding does not depend on them, so a run can build its
+    /// experiment txs again for a later start and fund the same way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slots: Option<RunSlots>,
     pub txs: Vec<ManifestTx>,
+}
+
+/// A tx's validity interval as absolute slots, as the ledger reads it.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Window {
+    /// First slot the tx is valid in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalid_before: Option<u64>,
+    /// First slot the tx is no longer valid in (its TTL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalid_hereafter: Option<u64>,
+}
+
+/// What a tx's window was asked for and the slots it became.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+pub struct ManifestValidity {
+    /// The window as the spec wrote it, in slots after its anchor.
+    pub requested: Validity,
+    #[serde(flatten)]
+    pub window: Window,
 }
 
 /// The script txs with a cost run, and the collateral they share.
@@ -166,6 +194,9 @@ pub struct ManifestTx {
     /// Script txs: the cost asked for and used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<ManifestCost>,
+    /// Txs with a validity window: the window asked for and its slots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validity: Option<ManifestValidity>,
     pub cbor_hex: String,
 }
 
@@ -391,6 +422,35 @@ pub fn materialise(
     }
     let plan_of: BTreeMap<&String, &CostPlan> = plans.iter().map(|(n, p)| (*n, p)).collect();
 
+    // Each windowed tx's slots; resolved before funding so a context without
+    // the slots a window counts from stops the run before anything is built.
+    context.slots.validate()?;
+    let mut window_of: BTreeMap<&String, (Validity, Window)> = BTreeMap::new();
+    for name in &derived.topo_order {
+        let Some(validity) = ir.txs.get(name).and_then(|t| t.validity) else {
+            continue;
+        };
+        let (invalid_before, invalid_hereafter) = validity
+            .absolute(context.slots.start, context.slots.tip)
+            .ok_or_else(|| {
+                Error::Context(format!(
+                    "tx `{name}`: its validity window counts from the run's {anchor}, so \
+                     the context needs `slots.{anchor}`",
+                    anchor = validity.anchor.as_str()
+                ))
+            })?;
+        window_of.insert(
+            name,
+            (
+                validity,
+                Window {
+                    invalid_before,
+                    invalid_hereafter,
+                },
+            ),
+        );
+    }
+
     // --- Funding ----------------------------------------------------------
     for (name, source) in &ir.sources {
         if source.lovelace < min_lovelace {
@@ -589,6 +649,7 @@ pub fn materialise(
             pp,
             format,
             run.as_ref().map(|(_, _, run)| run),
+            window_of.get(name).map(|(_, window)| window),
         )
         .map_err(|e| in_tx(name, e))?;
         let mut cost_entry = None;
@@ -647,6 +708,12 @@ pub fn materialise(
         );
         entry.collateral = collateral_entry;
         entry.cost = cost_entry;
+        entry.validity = window_of
+            .get(name)
+            .map(|(requested, window)| ManifestValidity {
+                requested: *requested,
+                window: *window,
+            });
         entry.conflict_sets = member_of
             .get(name.as_str())
             .map(|sets| sets.iter().cloned().collect())
@@ -688,6 +755,7 @@ pub fn materialise(
             }),
             None => None,
         },
+        slots: (!window_of.is_empty()).then_some(context.slots),
         txs,
     })
 }
@@ -1154,12 +1222,14 @@ pub(crate) fn build_signed(
         pp,
         format,
         None,
+        None,
     )
 }
 
 /// [`build_signed`], with a script run when `script` is given: the burner as
 /// a witness, the redeemer on the fuel input, the collateral, the script data
-/// hash, and the script's execution fee on top of the size fee.
+/// hash, and the script's execution fee on top of the size fee. `window`, when
+/// given, is the tx's validity interval.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_signed_with(
     inputs: &[(Input, u64)],
@@ -1170,6 +1240,7 @@ pub(crate) fn build_signed_with(
     pp: &ProtocolParams,
     format: TxFormat,
     script: Option<&ScriptRun>,
+    window: Option<&Window>,
 ) -> Result<Built> {
     let min_change = match planned.iter().find(|o| o.lovelace.is_none()) {
         Some(change) => min_for(&change.address, pp)?,
@@ -1219,6 +1290,14 @@ pub(crate) fn build_signed_with(
             staging = staging.output(Output::new(output.address.clone(), lovelace));
         }
         let mut staging = staging.fee(fee).add_auxiliary_data(metadata.to_vec());
+        if let Some(window) = window {
+            if let Some(slot) = window.invalid_before {
+                staging = staging.valid_from_slot(slot);
+            }
+            if let Some(slot) = window.invalid_hereafter {
+                staging = staging.invalid_from_slot(slot);
+            }
+        }
         if let Some(run) = script {
             staging = staging
                 .collateral_input(run.collateral.clone())
@@ -1367,6 +1446,7 @@ fn manifest_tx(
         orphan_on: vec![],
         collateral: None,
         cost: None,
+        validity: None,
         cbor_hex: hex::encode(&built.bytes),
     }
 }

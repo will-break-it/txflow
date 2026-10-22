@@ -15,6 +15,7 @@ use crate::limits::Limits;
 use crate::network::Network;
 use crate::schedule::{self, Plan};
 use crate::spec::ExperimentSpec;
+use crate::validity;
 
 /// The outcome of [`check`].
 #[derive(Serialize, Debug)]
@@ -82,6 +83,11 @@ pub fn check_within(text: &str, limits: &Limits, network: Option<&Network>) -> R
                 }
                 warnings.extend(schedule::ordering(plan, &ir));
             }
+            warnings.extend(validity::warnings(
+                &ir,
+                plan.as_ref(),
+                network.and_then(|n| n.slots.as_ref()).map(|s| s.length_ms),
+            ));
             let summary = summarise(&spec, &ir, plan.as_ref());
             Report {
                 ok: true,
@@ -179,6 +185,7 @@ fn summarise(spec: &ExperimentSpec, ir: &Ir, plan: Option<&Plan>) -> Summary {
     }
     describe_tags(ir, &mut description);
     describe_costs(ir, &mut description);
+    describe_windows(ir, &mut description);
     if let Some(plan) = plan {
         describe_plan(plan, &mut description);
     }
@@ -284,6 +291,32 @@ fn describe_costs(ir: &Ir, description: &mut Vec<String>) {
             .collect::<Vec<_>>()
             .join(", ")
     ));
+}
+
+/// How many transactions carry a validity window, and the tightest of them.
+fn describe_windows(ir: &Ir, description: &mut Vec<String>) {
+    let windows: Vec<_> = ir.txs.values().filter_map(|tx| tx.validity).collect();
+    if windows.is_empty() {
+        return;
+    }
+    let mut text = format!(
+        "{} transaction{} carr{} a validity window",
+        windows.len(),
+        plural(windows.len()),
+        if windows.len() == 1 { "ies" } else { "y" }
+    );
+    if let Some(soonest) = windows
+        .iter()
+        .filter(|w| w.until.is_some())
+        .min_by_key(|w| w.until)
+    {
+        text.push_str(&format!(
+            "; the first to expire is valid {}",
+            soonest.describe()
+        ));
+    }
+    text.push('.');
+    description.push(text);
 }
 
 /// One sentence per target, in the order targets are first used.

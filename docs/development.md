@@ -34,6 +34,12 @@ error. Relay addresses are public configuration, not secrets. They change when
 an instance is stopped. `via` defaults to `n2c`, so the node answers accept or
 reject.
 
+The file's `slots` is the network's slot clock: `systemStart` and `slotLength`
+from its Shelley genesis, as `start` and `length_ms`. A site reads it to find the
+slot a run starts in, for validity windows counted from the start, and
+`txflow check --network` to warn about a send outside its tx's window. A
+network that is rolled starts again, so `slots.start` changes with it.
+
 A temporary relay carries `until`, a UTC time written `YYYY-MM-DDTHH:MM:SSZ`.
 From then on a site leaves it out of the network it serves: the model's
 prompt, the page's checks and new runs no longer see it. `txflow check`

@@ -8,6 +8,9 @@
 network: testnet
 magic: 164            # recorded in the manifest
 era: dijkstra          # txs are encoded in the Dijkstra format (no is_valid flag)
+# The slots validity windows count from: the slot the run's schedule starts
+# in, and the slot of the tip block then. Read only by txs with a `validity`.
+slots: { start: 432000, tip: 431988 }
 pparams:
   min_fee_a: 44
   min_fee_b: 155381
