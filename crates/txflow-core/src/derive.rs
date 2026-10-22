@@ -378,7 +378,7 @@ fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
     Ok(out.write_all(b"}")?)
 }
 
-fn validate(ir: &Ir) -> Result<()> {
+pub(crate) fn validate(ir: &Ir) -> Result<()> {
     let mut wallets = BTreeSet::new();
     for wallet in &ir.wallets {
         if !wallets.insert(wallet) {
@@ -486,7 +486,7 @@ pub fn generations(ir: &Ir, order: &[String]) -> Result<BTreeMap<String, u64>> {
 /// placed is emitted, in name order, before any of its children. So the
 /// order is deterministic and independent chains interleave step by step
 /// (`a1, b1, a2, b2, ...`).
-fn topo_order(ir: &Ir) -> Result<Vec<String>> {
+pub(crate) fn topo_order(ir: &Ir) -> Result<Vec<String>> {
     let mut parents: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     let mut children: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
     for (name, tx) in &ir.txs {

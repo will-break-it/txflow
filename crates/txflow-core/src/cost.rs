@@ -17,7 +17,7 @@ use std::fmt;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::error::{Error, Result};
+use crate::error::{prefixed, Error, Result};
 use crate::expr;
 
 /// A share is held in hundredths of a percent, so `12.5%` is 1250.
@@ -219,10 +219,7 @@ impl CostSpec {
                 .as_ref()
                 .map(|v| resolve_value(v, params))
                 .transpose()
-                .map_err(|e| match e {
-                    Error::Spec(message) => Error::Spec(format!("cost `{field}`: {message}")),
-                    other => other,
-                })
+                .map_err(|e| prefixed(format!("cost `{field}`"), e))
         };
         let cost = Cost {
             cpu: value("cpu", &self.cpu)?,

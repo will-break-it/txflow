@@ -390,10 +390,8 @@ impl ChainContext {
             change_address: file.funding.change_address,
             offered,
             origin: check_origin(file.origin.as_deref().unwrap_or("cli"))?,
-            slots: {
-                file.slots.validate()?;
-                file.slots
-            },
+            // Checked by materialise, and only when a tx has a window.
+            slots: file.slots,
         })
     }
 }

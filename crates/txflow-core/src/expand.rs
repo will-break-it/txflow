@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cost::Covering;
 use crate::derive;
-use crate::error::{Error, Result};
+use crate::error::{prefixed, Error, Result};
 use crate::expr;
 use crate::ir::{Ir, Source, Tx};
 use crate::metadata::{self, Metadata};
@@ -42,10 +42,7 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         .as_ref()
         .map(|c| c.resolve(&spec.params))
         .transpose()
-        .map_err(|e| match e {
-            Error::Spec(message) => Error::Spec(format!("spec: {message}")),
-            other => other,
-        })?;
+        .map_err(|e| prefixed("spec", e))?;
     // Whether the spec's own cost reached any tx.
     let mut spec_cost_used = false;
     // Validity windows for many txs, and who wrote each (a pattern id, or
@@ -53,10 +50,9 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
     // graph is known, since `step` and `select.depth` need each tx's generation.
     let mut windows: Vec<(validity::Covering, Option<String>)> = vec![];
     if let Some(spec_validity) = &spec.validity {
-        let covering = spec_validity.resolve(&spec.params).map_err(|e| match e {
-            Error::Spec(message) => Error::Spec(format!("spec: {message}")),
-            other => other,
-        })?;
+        let covering = spec_validity
+            .resolve(&spec.params)
+            .map_err(|e| prefixed("spec", e))?;
         windows.push((covering, None));
     }
     let spec_window = (!windows.is_empty()).then_some(0);
@@ -229,10 +225,7 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
     }
     for (name, tx) in &spec.txs {
         check_name(name)?;
-        let in_tx = |e: Error| match e {
-            Error::Spec(message) => Error::Spec(format!("tx `{name}`: {message}")),
-            other => other,
-        };
+        let in_tx = |e: Error| prefixed(format!("tx `{name}`"), e);
         metadata::validate(&tx.metadata).map_err(in_tx)?;
         let mut tx = tx.clone();
         tx.metadata = metadata::merge(&spec.metadata, &tx.metadata);
@@ -302,8 +295,9 @@ fn place_windows(
     windows: &[(validity::Covering, Option<String>)],
     window_of: &BTreeMap<String, usize>,
 ) -> Result<()> {
-    // Generations need a valid, acyclic graph; derive says what is wrong first.
-    let order = derive::derive(ir)?.topo_order;
+    // Generations need a valid, acyclic graph; say what is wrong first.
+    derive::validate(ir)?;
+    let order = derive::topo_order(ir)?;
     let generation = derive::generations(ir, &order)?;
     let mut used = vec![false; windows.len()];
     for (name, &index) in window_of {
@@ -313,10 +307,9 @@ fn place_windows(
             .get_mut(name)
             .ok_or_else(|| Error::Graph(format!("missing tx `{name}`")))?;
         let depth = generation.get(name).copied().unwrap_or(0);
-        tx.validity = covering.for_tx(&tx.labels, depth).map_err(|e| match e {
-            Error::Spec(message) => Error::Spec(format!("tx `{name}`: {message}")),
-            other => other,
-        })?;
+        tx.validity = covering
+            .for_tx(&tx.labels, depth)
+            .map_err(|e| prefixed(format!("tx `{name}`"), e))?;
         used[index] |= tx.validity.is_some();
     }
     for ((covering, owner), used) in windows.iter().zip(used) {
@@ -346,18 +339,12 @@ struct Tag {
 
 /// Name the pattern instance an error came from.
 fn in_pattern(id: &str, error: Error) -> Error {
-    match error {
-        Error::Spec(message) => Error::Spec(format!("pattern `{id}`: {message}")),
-        other => other,
-    }
+    prefixed(format!("pattern `{id}`"), error)
 }
 
 /// Name the pattern argument an expression error came from.
 fn in_arg(id: &str, arg: &str, error: Error) -> Error {
-    match error {
-        Error::Spec(message) => Error::Spec(format!("pattern `{id}`, `{arg}`: {message}")),
-        other => other,
-    }
+    prefixed(format!("pattern `{id}`, `{arg}`"), error)
 }
 
 fn take_string(

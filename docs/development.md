@@ -38,7 +38,10 @@ The file's `slots` is the network's slot clock: `systemStart` and `slotLength`
 from its Shelley genesis, as `start` and `length_ms`. A site reads it to find the
 slot a run starts in, for validity windows counted from the start, and
 `txflow check --network` to warn about a send outside its tx's window. A
-network that is rolled starts again, so `slots.start` changes with it.
+network that is rolled starts again, so `slots.start` changes with it. The
+optional `horizon` is `3k/f` from the same genesis (`securityParam` over
+`activeSlotsCoeff`): how many slots past its tip a node can tell the time of.
+`txflow check` warns about a script tx whose window closes later.
 
 A temporary relay carries `until`, a UTC time written `YYYY-MM-DDTHH:MM:SSZ`.
 From then on a site leaves it out of the network it serves: the model's

@@ -172,9 +172,15 @@ is older; only the block forged in a slot at or after `until` can no longer carr
 `tip` is the anchor that edges near zero mean to a node: `until: 2, anchor: tip` is
 admitted and relayed, and only a block in the slot right after the tip could carry it.
 
-Expansion checks that a window is not empty. `txflow check` warns about a tx whose window
-closes before its parent's opens (it can never land), and, with a network that has a
-slot clock (`slots` in the network file), about sends outside their tx's window. A
+Expansion checks that a window is not empty (`until: 0` is). `txflow check` warns about
+a tx that can never land: its window closes before the window of a tx it follows opens
+(what it spends or reads, and theirs in turn), or, counted from the tip, at or before
+slot 1, the slot a node checks it against. With a network that has a slot clock (`slots`
+in the network file), it also warns about sends outside their tx's window, taking
+`at: 0ms` as the start of slot `start` (the site aligns a run's start to a slot), and,
+when the network gives a `horizon`, about a script tx whose window closes past it: a
+node can tell the time of slots only so far past its tip (`3k/f`, 6480 on Musashi),
+and a script sees its window as times, so the tx is refused. A
 missing `validity` is left out of the canonical form, and so is `anchor: start`.
 
 A script transaction that never lands (the losing side of a conflict, or one orphaned by
@@ -309,9 +315,10 @@ stay untouched. A shortfall is reported with the amount needed before anything i
 Relative paths resolve against the context file's directory.
 
 `slots` is needed only by txs with a validity window, and then only the anchor their
-windows count from. A run that does not know its start until funding has landed builds
-twice: once to fund, and again with `slots` just before it starts, since funding does not
-depend on them (below).
+windows count from. Every build needs them, the first too: a run that does not know its
+start until funding has landed builds once with the slots of the moment it builds, to
+fund, and again with the real `slots` just before it starts. Funding does not depend on
+them (below), so both builds fund the same way.
 
 How the file is produced (a one-off node query, Ogmios, db-sync, or a future net-rs N2C
 client) is outside the format. `txflow context` may offer helpers.
@@ -387,6 +394,8 @@ Excerpt from the worked example against the demo context:
   ```json
   "validity": { "requested": { "until": 3, "anchor": "tip" }, "invalid_hereafter": 431991 }
   ```
+
+  `requested` is the IR's window, after any `step` for the tx's generation.
 
   Neither `run_id` nor any funding tx depends on `slots`, so the same spec and context
   built for a later start fund the same way and differ only in the experiment txs.

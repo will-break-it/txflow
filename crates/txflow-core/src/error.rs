@@ -34,6 +34,14 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Put `context` in front of a spec error, e.g. `tx `x`: ...`.
+pub fn prefixed(context: impl std::fmt::Display, error: Error) -> Error {
+    match error {
+        Error::Spec(message) => Error::Spec(format!("{context}: {message}")),
+        other => other,
+    }
+}
+
 /// Read a whole file, naming it in the error.
 pub fn read_file(path: &std::path::Path) -> Result<String> {
     std::fs::read_to_string(path).map_err(|source| Error::File {
