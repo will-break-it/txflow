@@ -10,18 +10,22 @@
 //! the last block, so `tip` is the anchor that window edges near zero mean.
 //!
 //! On the spec and on pattern instances a window may use params, `step`
-//! shifts it by that many slots per generation (a tx that spends a tx in
-//! the window's reach is one generation later), and `select` limits which
-//! txs it covers. [`ValiditySpec::resolve`] evaluates it; explicit txs and
+//! shifts it by that many slots per generation, and `select` limits which
+//! txs it covers. A tx's generation is 0 when it spends and reads only
+//! sources, otherwise one more than the latest tx it spends or reads from,
+//! so a chain's txs are generations 0, 1, 2, ... and a tx `n` generations
+//! in carries the window moved `n * step` slots later. [`ValiditySpec::resolve`] evaluates it; explicit txs and
 //! the IR hold resolved windows only.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::derive;
+use crate::error::{prefixed, Error, Result};
 use crate::expr;
 use crate::ir::{Ir, Ref};
+use crate::network::Slots;
 use crate::schedule::{show_ms, Plan};
 
 /// The largest offset a window may reach, after any `step`: about 31 years
@@ -79,6 +83,9 @@ impl Validity {
             (Some(from), Some(until)) if until <= from => Err(Error::Spec(format!(
                 "`validity` is empty: `until` ({until}) must be after `from` ({from})"
             ))),
+            (None, Some(0)) => Err(Error::Spec(
+                "`validity` is empty: `until` 0 closes it in the slot it counts from".to_string(),
+            )),
             _ => {
                 for edge in [self.from, self.until].into_iter().flatten() {
                     if edge > MAX_OFFSET {
@@ -164,7 +171,8 @@ pub struct ValiditySelect {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Only txs of this generation: 0 for those that spend and read only
-    /// sources (the first tx of a chain), 1 for their children, and so on.
+    /// sources (the first tx of a chain), otherwise one more than the latest
+    /// tx they spend or read from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<u64>,
 }
@@ -219,10 +227,7 @@ impl ValiditySpec {
                 .as_ref()
                 .map(|v| expr::eval(v, params))
                 .transpose()
-                .map_err(|e| match e {
-                    Error::Spec(message) => Error::Spec(format!("validity `{field}`: {message}")),
-                    other => other,
-                })
+                .map_err(|e| prefixed(format!("validity `{field}`"), e))
         };
         let window = Validity {
             from: value("from", &self.from)?,
@@ -251,48 +256,111 @@ impl ValiditySpec {
     }
 }
 
-/// Windows that rule a tx out whatever happens: a child whose window closes
-/// before its parent's opens can never follow it onto the chain. With the
-/// network's slot length, also sends that fall outside their tx's window as
-/// the clock goes: one sent after `until` can no longer be carried by a block
-/// (a node whose tip is older may still take it in), and one sent before a
-/// `from` counted from the start is refused until the node's tip passes it.
-pub fn warnings(ir: &Ir, plan: Option<&Plan>, slot_ms: Option<u64>) -> Vec<String> {
+/// Windows that rule a tx out whatever happens. A tx lands only after every
+/// tx it follows (what it spends or reads, and theirs in turn), so one whose
+/// window closes before an ancestor's opens never lands; nor does one that
+/// closes by the slot after the tip, the slot a node checks a new tx against.
+/// A tx that runs a script and closes past the network's `horizon` is refused
+/// too. With the network's slot length, also sends that fall outside their
+/// tx's window as the clock goes: one sent after `until` can no longer be
+/// carried by a block (a node whose tip is older may still take it in), and
+/// one sent before a `from` counted from the start is refused until the
+/// node's tip passes it. These take `at: 0ms` to be the start of slot
+/// `start`, as a run that builds its windows at its start makes it.
+pub fn warnings(ir: &Ir, plan: Option<&Plan>, slots: Option<&Slots>) -> Vec<String> {
     let mut warnings = vec![];
-    for (name, tx) in &ir.txs {
-        let Some(until) = tx.validity.and_then(|v| v.until.map(|u| (u, v.anchor))) else {
+    let order = match &ir.derived {
+        Some(derived) => derived.topo_order.clone(),
+        None => derive::topo_order(ir).unwrap_or_default(),
+    };
+    // For each tx, the latest-opening window among the txs it follows, per
+    // anchor (start, tip): the slot it opens at and whose it is.
+    let mut follows: BTreeMap<&str, [Option<(u64, &str)>; 2]> = BTreeMap::new();
+    for name in &order {
+        let Some((name, tx)) = ir.txs.get_key_value(name) else {
             continue;
         };
+        let mut latest: [Option<(u64, &str)>; 2] = [None, None];
+        let mut parents = vec![];
         for input in tx.inputs.iter().chain(&tx.reference_inputs) {
             let Ok(Ref::Output { tx: parent, .. }) = Ref::parse(input) else {
                 continue;
             };
-            let Some(from) = ir
-                .txs
-                .get(&parent)
-                .and_then(|p| p.validity)
-                .and_then(|v| v.from.map(|f| (f, v.anchor)))
-            else {
+            let Some((parent, ptx)) = ir.txs.get_key_value(&parent) else {
                 continue;
             };
-            // The tip is at or before the start, so a window counted from the
-            // tip closes no later than the same numbers counted from the start.
-            let comparable =
-                until.1 == from.1 || (until.1 == Anchor::Tip && from.1 == Anchor::Start);
-            if comparable && until.0 <= from.0 {
+            parents.push(parent.as_str());
+            let mut seen = follows.get(parent.as_str()).copied().unwrap_or_default();
+            if let Some(Validity {
+                from: Some(from),
+                anchor,
+                ..
+            }) = ptx.validity
+            {
+                let slot = &mut seen[anchor as usize];
+                if slot.is_none_or(|(at, _)| from > at) {
+                    *slot = Some((from, parent.as_str()));
+                }
+            }
+            for (mine, theirs) in latest.iter_mut().zip(seen) {
+                if let Some((at, who)) = theirs {
+                    if mine.is_none_or(|(m, _)| at > m) {
+                        *mine = Some((at, who));
+                    }
+                }
+            }
+        }
+        follows.insert(name.as_str(), latest);
+        let Some(window) = tx.validity else {
+            continue;
+        };
+        let Some(until) = window.until else {
+            continue;
+        };
+        if window.anchor == Anchor::Tip && until <= 1 {
+            warnings.push(format!(
+                "`{name}` can never land: its window closes at slot {until} after the tip, \
+                 and a node checks a new tx against the slot after its tip"
+            ));
+            continue;
+        }
+        // The tip is at or before the start, so a window counted from the
+        // tip closes no later than the same numbers counted from the start.
+        let against: &[Anchor] = match window.anchor {
+            Anchor::Start => &[Anchor::Start],
+            Anchor::Tip => &[Anchor::Tip, Anchor::Start],
+        };
+        let blocked = against.iter().find_map(|&anchor| {
+            latest[anchor as usize]
+                .filter(|&(from, _)| until <= from)
+                .map(|(from, who)| (from, who, anchor))
+        });
+        if let Some((from, who, anchor)) = blocked {
+            let kin = if parents.contains(&who) {
+                "parent"
+            } else {
+                "ancestor"
+            };
+            warnings.push(format!(
+                "`{name}` can never land: its window closes at slot {until} after the {}, \
+                 before its {kin} `{who}`'s opens at slot {from} after the {}",
+                window.anchor.as_str(),
+                anchor.as_str()
+            ));
+            continue;
+        }
+        if let Some(horizon) = slots.and_then(|s| s.horizon) {
+            if tx.cost.is_some() && until > horizon {
                 warnings.push(format!(
-                    "`{name}` can never land: its window closes at slot {} after the {}, \
-                     before its parent `{parent}`'s opens at slot {} after the {}",
-                    until.0,
-                    until.1.as_str(),
-                    from.0,
-                    from.1.as_str()
+                    "`{name}` runs a script and its window closes at slot {until} after the {}, \
+                     past the network's horizon of {horizon} slots after the tip: a node cannot \
+                     give the script that time and refuses the tx",
+                    window.anchor.as_str()
                 ));
-                break;
             }
         }
     }
-    let (Some(plan), Some(slot_ms)) = (plan, slot_ms) else {
+    let (Some(plan), Some(slot_ms)) = (plan, slots.map(|s| s.length_ms)) else {
         return warnings;
     };
     for send in &plan.sends {

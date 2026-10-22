@@ -113,6 +113,7 @@ fn windows_that_cannot_hold_a_tx_are_errors() {
         format!("{HEAD}patterns:\n  - {{ id: c, use: chain, with: {{ length: 2 }}, validity: {validity} }}\n")
     };
     assert!(error(&pattern("{ from: 5, until: 5 }")).contains("must be after"));
+    assert!(error(&pattern("{ until: 0 }")).contains("`until` 0 closes it"));
     assert!(error(&pattern("{ step: 2 }")).contains("needs `from`, `until` or both"));
     assert!(error(&pattern("{ until: 3, select: { label: nope } }")).contains("the label `nope`"));
     assert!(error(&pattern("{ until: 3, select: { depth: 7 } }")).contains("generation 7"));
@@ -204,4 +205,84 @@ fn a_network_slot_clock_is_checked() {
     assert!(network(r#"{"start":"2026-10-18T00:00:00Z","length_ms":1000}"#).is_ok());
     assert!(network(r#"{"start":"2026-10-18","length_ms":1000}"#).is_err());
     assert!(network(r#"{"start":"2026-10-18T00:00:00Z","length_ms":0}"#).is_err());
+    assert!(network(r#"{"start":"2026-10-18T00:00:00Z","length_ms":1000,"horizon":6480}"#).is_ok());
+    assert!(network(r#"{"start":"2026-10-18T00:00:00Z","length_ms":1000,"horizon":0}"#).is_err());
+}
+
+fn warnings(text: &str) -> Vec<String> {
+    let network =
+        Network::from_text(include_str!("../../../networks/musashi.json")).expect("network");
+    let report = check_within(text, &Limits::default(), Some(&network));
+    assert!(report.ok, "{:?}", report.errors);
+    report.warnings
+}
+
+#[test]
+fn a_tx_cannot_land_before_any_tx_it_follows() {
+    // `g` closes before `a`'s window opens, two txs up the chain.
+    let text = format!(
+        "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+         a: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change }}], validity: {{ from: 10 }} }}\n  \
+         b: {{ inputs: [a.0], outputs: [{{ to: alice, lovelace: change }}] }}\n  \
+         g: {{ inputs: [b.0], outputs: [{{ to: alice, lovelace: change }}], validity: {{ until: 9 }} }}\n"
+    );
+    let warnings = warnings(&text).join("\n");
+    assert!(
+        warnings.contains(
+            "`g` can never land: its window closes at slot 9 after the start, \
+             before its ancestor `a`'s opens at slot 10 after the start"
+        ),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn a_window_that_closes_by_the_slot_after_the_tip_never_lands() {
+    let text = |until: u64| {
+        format!(
+            "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+             t: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change }}], \
+             validity: {{ until: {until}, anchor: tip }} }}\n"
+        )
+    };
+    assert!(warnings(&text(1))
+        .iter()
+        .any(|w| w.contains("`t` can never land")));
+    assert!(warnings(&text(2)).is_empty());
+}
+
+#[test]
+fn a_script_window_past_the_horizon_is_refused() {
+    let text = |until: u64| {
+        format!(
+            "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+             t: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change }}], \
+             cost: {{ cpu: 10% }}, validity: {{ until: {until}, anchor: tip }} }}\n"
+        )
+    };
+    assert!(warnings(&text(6481))
+        .iter()
+        .any(|w| w.contains("past the network's horizon of 6480 slots")));
+    assert!(warnings(&text(6480)).is_empty());
+}
+
+#[test]
+fn the_summary_names_the_first_to_expire_per_anchor() {
+    let text = format!(
+        "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+         a: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change }}], validity: {{ until: 5 }} }}\n  \
+         b: {{ inputs: [a.0], outputs: [{{ to: alice, lovelace: change }}], validity: {{ until: 30, anchor: tip }} }}\n"
+    );
+    let summary = check(&text)
+        .summary
+        .expect("summary")
+        .description
+        .join("\n");
+    assert!(
+        summary.contains(
+            "the first to expire is valid until slot 30 after the tip, and of those counted \
+             from the start, until slot 5 after the start"
+        ),
+        "{summary}"
+    );
 }

@@ -128,5 +128,8 @@ fn a_spec_without_windows_ignores_the_slots() {
     let with = build(&text, &context(slots(5_000, 4_990))).expect("with slots");
     let without = build(&text, &context(RunSlots::default())).expect("without slots");
     assert_eq!(with, without);
+    // Nor are they checked: a tip after the start matters only to a window.
+    let odd = build(&text, &context(slots(5_000, 5_001))).expect("odd slots");
+    assert_eq!(with, odd);
     assert_eq!(with.slots, None);
 }

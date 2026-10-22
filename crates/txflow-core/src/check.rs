@@ -15,7 +15,7 @@ use crate::limits::Limits;
 use crate::network::Network;
 use crate::schedule::{self, Plan};
 use crate::spec::ExperimentSpec;
-use crate::validity;
+use crate::validity::{self, Anchor};
 
 /// The outcome of [`check`].
 #[derive(Serialize, Debug)]
@@ -86,7 +86,7 @@ pub fn check_within(text: &str, limits: &Limits, network: Option<&Network>) -> R
             warnings.extend(validity::warnings(
                 &ir,
                 plan.as_ref(),
-                network.and_then(|n| n.slots.as_ref()).map(|s| s.length_ms),
+                network.and_then(|n| n.slots.as_ref()),
             ));
             let summary = summarise(&spec, &ir, plan.as_ref());
             Report {
@@ -305,14 +305,22 @@ fn describe_windows(ir: &Ir, description: &mut Vec<String>) {
         plural(windows.len()),
         if windows.len() == 1 { "ies" } else { "y" }
     );
-    if let Some(soonest) = windows
-        .iter()
-        .filter(|w| w.until.is_some())
-        .min_by_key(|w| w.until)
-    {
+    // Windows counted from the start and from the tip do not compare, so
+    // name the first to expire on each.
+    let soonest: Vec<String> = [Anchor::Tip, Anchor::Start]
+        .into_iter()
+        .filter_map(|anchor| {
+            windows
+                .iter()
+                .filter(|w| w.anchor == anchor && w.until.is_some())
+                .min_by_key(|w| w.until)
+                .map(|w| w.describe())
+        })
+        .collect();
+    if !soonest.is_empty() {
         text.push_str(&format!(
             "; the first to expire is valid {}",
-            soonest.describe()
+            soonest.join(", and of those counted from the start, ")
         ));
     }
     text.push('.');

@@ -119,7 +119,8 @@ pub struct Window {
 /// What a tx's window was asked for and the slots it became.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq)]
 pub struct ManifestValidity {
-    /// The window as the spec wrote it, in slots after its anchor.
+    /// The tx's window in slots after its anchor, as the IR holds it: the
+    /// spec's, moved by any `step` for the tx's generation.
     pub requested: Validity,
     #[serde(flatten)]
     pub window: Window,
@@ -424,7 +425,9 @@ pub fn materialise(
 
     // Each windowed tx's slots; resolved before funding so a context without
     // the slots a window counts from stops the run before anything is built.
-    context.slots.validate()?;
+    if ir.txs.values().any(|t| t.validity.is_some()) {
+        context.slots.validate()?;
+    }
     let mut window_of: BTreeMap<&String, (Validity, Window)> = BTreeMap::new();
     for name in &derived.topo_order {
         let Some(validity) = ir.txs.get(name).and_then(|t| t.validity) else {

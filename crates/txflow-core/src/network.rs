@@ -42,6 +42,12 @@ pub struct Slots {
     /// UTC `YYYY-MM-DDTHH:MM:SSZ`.
     pub start: String,
     pub length_ms: u64,
+    /// How many slots past its tip a node can tell the time of: `3k/f` from
+    /// the genesis (`securityParam`, `activeSlotsCoeff`). A tx that runs a
+    /// script and whose window closes later is refused, since the script
+    /// sees its window as times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<u64>,
 }
 
 /// A block explorer for the network.
@@ -136,11 +142,11 @@ impl Network {
             }
         }
         if let Some(slots) = &network.slots {
-            if !is_utc_instant(&slots.start) || slots.length_ms == 0 {
+            if !is_utc_instant(&slots.start) || slots.length_ms == 0 || slots.horizon == Some(0) {
                 return Err(Error::Spec(format!(
                     "network file: `slots` needs `start` as UTC YYYY-MM-DDTHH:MM:SSZ and a \
-                     `length_ms` above 0, has {:?} and {}",
-                    slots.start, slots.length_ms
+                     `length_ms` and any `horizon` above 0, has {:?}, {} and {:?}",
+                    slots.start, slots.length_ms, slots.horizon
                 )));
             }
         }
