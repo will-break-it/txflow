@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::assets::Policy;
 use crate::cost::Covering;
 use crate::derive;
 use crate::error::{prefixed, Error, Result};
@@ -63,6 +64,12 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
 
     let mut sources: BTreeMap<String, Source> = BTreeMap::new();
     let mut txs: BTreeMap<String, Tx> = BTreeMap::new();
+    let mut policies: BTreeMap<String, Policy> = BTreeMap::new();
+    // Each policy a pattern emits takes the next slot from 1 up that no
+    // other policy has, so every copy of every pattern gets its own policy
+    // ids and the spec's own policies keep theirs.
+    let mut taken: BTreeSet<u64> = spec.policies.values().map(|p| p.after_slot).collect();
+    let mut next_slot: u64 = 1;
 
     for instance in &spec.patterns {
         check_name(&instance.id)?;
@@ -122,6 +129,7 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         let flags = Flags {
             conflict: take_string(&mut with, "conflict")
                 .map_err(|e| in_pattern(&instance.id, e))?,
+            burn: take_string(&mut with, "burn").map_err(|e| in_pattern(&instance.id, e))?,
         };
         let owner =
             match take_string(&mut with, "wallet").map_err(|e| in_pattern(&instance.id, e))? {
@@ -171,7 +179,13 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
             + fragment
                 .txs
                 .values()
-                .map(|t| 1 + t.inputs.len() + t.reference_inputs.len() + t.outputs.len())
+                .map(|t| {
+                    1 + t.inputs.len()
+                        + t.reference_inputs.len()
+                        + t.outputs.len()
+                        + t.mint.len()
+                        + t.outputs.iter().map(|o| o.tokens.len()).sum::<usize>()
+                })
                 .sum::<usize>()) as u64;
         total_nodes = total_nodes.saturating_add(nodes.saturating_mul(count));
         if total_nodes > MAX_ELEMENTS {
@@ -199,6 +213,21 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
             for (name, source) in &fragment.sources {
                 insert_unique(&mut sources, format!("{prefix}{name}"), source.clone())?;
             }
+            // In the pattern's own order (its slots 1, 2, ...), not by name.
+            let mut local: Vec<(&String, &Policy)> = fragment.policies.iter().collect();
+            local.sort_by_key(|(_, policy)| policy.after_slot);
+            for (name, _) in local {
+                while !taken.insert(next_slot) {
+                    next_slot += 1;
+                }
+                insert_unique(
+                    &mut policies,
+                    format!("{prefix}{name}"),
+                    Policy {
+                        after_slot: next_slot,
+                    },
+                )?;
+            }
             for (name, tx) in &fragment.txs {
                 let mut tx = tx.clone();
                 tx.inputs = tx.inputs.iter().map(|r| format!("{prefix}{r}")).collect();
@@ -207,6 +236,18 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
                     .iter()
                     .map(|r| format!("{prefix}{r}"))
                     .collect();
+                tx.mint = tx
+                    .mint
+                    .iter()
+                    .map(|(key, quantity)| (format!("{prefix}{key}"), *quantity))
+                    .collect();
+                for output in &mut tx.outputs {
+                    output.tokens = output
+                        .tokens
+                        .iter()
+                        .map(|(key, quantity)| (format!("{prefix}{key}"), *quantity))
+                        .collect();
+                }
                 tx.metadata = tag.metadata.clone();
                 tx.color = tag.color.clone();
                 tx.cost = tag.cost.as_ref().and_then(|c| c.for_labels(&tx.labels));
@@ -219,6 +260,10 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
         }
     }
 
+    for (name, policy) in &spec.policies {
+        check_name(name)?;
+        insert_unique(&mut policies, name.clone(), *policy)?;
+    }
     for (name, source) in &spec.sources {
         check_name(name)?;
         insert_unique(&mut sources, name.clone(), source.clone())?;
@@ -276,6 +321,7 @@ pub fn expand(spec: &ExperimentSpec) -> Result<Ir> {
     let mut ir = Ir {
         version: VERSION,
         wallets: spec.wallets.keys().cloned().collect(),
+        policies,
         sources,
         txs,
         derived: None,

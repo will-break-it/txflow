@@ -1,0 +1,16 @@
+# Two UTxOs of five native assets each, under three time-lock policies (each
+# its own policy id), merged into one UTxO and split back into two with the
+# assets shuffled. Raise `assets` toward the network's maxValueSize to load
+# the ledger with large multi-asset values.
+version: 0
+experiment: asset-shuffle
+seed: 7
+wallets:
+  alice: {}
+patterns:
+  - id: shuffle
+    use: asset_shuffle
+    with: { utxos: 2, assets: 5, policies: 3 }
+schedule:
+  releases:
+    - { select: { pattern: shuffle }, target: frankfurt, spacing: 2s }

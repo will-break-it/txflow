@@ -90,3 +90,20 @@ Emits: sources wa, wb (fund each side), c1..cN (shared inputs; only c1 with `roo
 
 Example: `- { id: conflicting_chains, use: conflicting_chains, with: { length: 3, conflict: per_step } }`
 
+### `asset_shuffle`
+
+UTxOs full of native assets, merged and split again. `mint<i>` mints `assets` unique assets into one UTxO each; `merge<r>` spends them all into one UTxO holding every asset (fan-in), and `split<r>` pays them back out into `utxos` UTxOs with the assets shuffled (fan-out), `rounds` times. The assets are spread over `policies` time-lock policies, each its own policy id. Tests how the ledger handles large multi-asset values: the merged UTxO holds `utxos × assets` assets, and the network's maxValueSize caps it: 5000 bytes on Musashi, 844 assets of one policy or 137 policies of one asset.
+
+Emits: policies p1..pP; sources s1..sU; txs mint1..mintU (mint<i> spends s<i>), merge1..mergeR (merge<r> spends every UTxO of the round before), split1..splitR (split<r> spends merge<r>.0 and pays `utxos` outputs), and burn with `burn: all`; assets a1..aN, a<j> under p<(j-1) % P + 1>.
+
+- `utxos` (whole number 1..100, default 2): UTxOs minted, and split back into each round.
+- `assets` (whole number 1..1000, default 5): Unique assets each UTxO holds; the merged UTxO holds `utxos × assets`.
+- `policies` (whole number 1..1000, default 1): Distinct minting policies the assets are spread over, round robin. Each is a native script valid after its own slot (1, 2, 3, …), so each has its own policy id.
+- `rounds` (whole number 1..100, default 1): Merge-and-split rounds; each round shuffles differently.
+- `quantity` (whole number 1..1000000000000, default 1): How many of each asset are minted and moved.
+- `burn` (one of `none`, `all`, default `none`): `all`: a last tx `burn` spends every UTxO and burns every asset, leaving ADA only. `none`: the assets stay.
+- `lovelace` (lovelace, default enough for the fees and every UTxO's min-UTxO with its assets): Value of each UTxO's source.
+- `wallet` (wallet name): Wallet that owns everything the pattern creates. Required when the spec declares more than one wallet.
+
+Example: `- { id: asset_shuffle, use: asset_shuffle, with: { utxos: 2, assets: 5, policies: 3 } }`
+

@@ -13,6 +13,7 @@
     "steps": 10000000000
   },
   "maxTxSize": 16384,
+  "maxValueSize": 5000,
   "protocolVersion": {
     "major": 12,
     "minor": 0

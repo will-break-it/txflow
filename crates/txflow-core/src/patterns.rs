@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::assets::{Mint, Policy, Tokens};
 use crate::catalogue::{self, ArgKind};
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, OutputSpec, Source, Tx};
@@ -30,6 +31,9 @@ const DEFAULT_CONFLICT_INPUT: u64 = 2 * ADA;
 /// A pattern's output before namespacing.
 #[derive(Debug, Default)]
 pub struct Fragment {
+    /// Minting policies, numbered from slot 1 within the fragment;
+    /// expansion gives each one a slot no other policy has.
+    pub policies: BTreeMap<String, Policy>,
     pub sources: BTreeMap<String, Source>,
     pub txs: BTreeMap<String, Tx>,
 }
@@ -137,9 +141,10 @@ impl Args {
     }
 }
 
-/// Non-numeric arguments (currently only `conflict`).
+/// Non-numeric arguments: `conflict` and `burn`.
 pub struct Flags {
     pub conflict: Option<String>,
+    pub burn: Option<String>,
 }
 
 /// Run pattern `name`.
@@ -152,10 +157,14 @@ pub fn generate(name: &str, mut args: Args, flags: &Flags, owner: &str) -> Resul
         "conflict_set" => conflict_set(&mut args, owner)?,
         "branch_merge" => branch_merge(&mut args, owner)?,
         "conflicting_chains" => conflicting_chains(&mut args, flags, owner)?,
+        "asset_shuffle" => asset_shuffle(&mut args, flags, owner)?,
         other => return Err(Error::Spec(format!("unknown pattern `{other}`"))),
     };
     if flags.conflict.is_some() && name != "conflicting_chains" {
         return Err(Error::Spec(format!("`{name}` has no argument `conflict`")));
+    }
+    if flags.burn.is_some() && name != "asset_shuffle" {
+        return Err(Error::Spec(format!("`{name}` has no argument `burn`")));
     }
     args.finish()?;
     Ok(fragment)
@@ -165,6 +174,7 @@ fn change_to(owner: &str) -> OutputSpec {
     OutputSpec {
         to: owner.to_string(),
         lovelace: Amount::Keyword(AmountKeyword::Change),
+        tokens: Tokens::new(),
     }
 }
 
@@ -172,6 +182,7 @@ fn min_to(owner: &str) -> OutputSpec {
     OutputSpec {
         to: owner.to_string(),
         lovelace: Amount::Keyword(AmountKeyword::Min),
+        tokens: Tokens::new(),
     }
 }
 
@@ -284,6 +295,7 @@ fn fan_out(args: &mut Args, owner: &str) -> Result<Fragment> {
         root_outputs.push(OutputSpec {
             to: owner.to_string(),
             lovelace: Amount::Fixed(per_branch),
+            tokens: Tokens::new(),
         });
     }
     root_outputs.push(change_to(owner));
@@ -439,6 +451,170 @@ fn conflicting_chains(args: &mut Args, flags: &Flags, owner: &str) -> Result<Fra
                 },
             );
         }
+    }
+    Ok(fragment)
+}
+
+/// Bytes the ledger charges min-UTxO for, per byte (mainnet's and Musashi's
+/// `utxoCostPerByte`), used only to size a pattern's default sources.
+const COINS_PER_BYTE: u64 = 4_310;
+
+/// An upper bound on the min-UTxO of an output holding `assets` assets of
+/// up to `policies` policies, each `quantity` of them, with names of up to
+/// `name` bytes: 160 bytes of ledger overhead, about 70 for the address and
+/// coin, 31 per policy id and its map, and per asset its name, quantity and
+/// headers.
+fn min_with_assets(assets: u64, policies: u64, name: u64, quantity: u64) -> u64 {
+    let quantity_bytes = match quantity {
+        0..=23 => 1,
+        24..=0xff => 2,
+        0x100..=0xffff => 3,
+        0x1_0000..=0xffff_ffff => 5,
+        _ => 9,
+    };
+    let bytes = 160 + 70 + policies * 31 + assets * (2 + name + quantity_bytes);
+    bytes.saturating_mul(COINS_PER_BYTE)
+}
+
+/// Fee budget of a tx that mints, burns or moves `assets` assets: about 40
+/// bytes per asset, at 44 lovelace a byte, over [`STEP_FEE`].
+fn asset_fee(assets: u64) -> u64 {
+    STEP_FEE.saturating_add(assets.saturating_mul(40 * 44))
+}
+
+/// A fixed permutation of `0..n` for round `round`: Fisher-Yates driven by
+/// splitmix64, so the shuffle is the same on every platform and run.
+fn shuffled(n: usize, round: u64) -> Vec<usize> {
+    let mut state = 0x7478_666c_6f77_u64 ^ round.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mut next = || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let mut order: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        let j = (next() % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+    order
+}
+
+/// `utxos` UTxOs of `assets` unique native assets each, minted under
+/// `policies` time-lock policies, merged into one UTxO (fan-in) and split
+/// back into `utxos` UTxOs with the assets shuffled (fan-out), `rounds`
+/// times; with `burn: all`, a last tx burns every asset.
+///
+/// Asset `a<j>` (j from 1) is under policy `p<(j - 1) % policies + 1>`, and
+/// `mint<i>` mints assets `(i - 1) * assets + 1` to `i * assets`. Round r's
+/// split pays each output `assets` assets in an order shuffled for r; its
+/// last output is the change, which takes the rest.
+fn asset_shuffle(args: &mut Args, flags: &Flags, owner: &str) -> Result<Fragment> {
+    let utxos = args.count("utxos")?;
+    let assets = args.count("assets")?;
+    let policies = args.count("policies")?;
+    let rounds = args.count("rounds")?;
+    let quantity = args.count("quantity")?;
+    let burn = args.choice("burn", flags.burn.as_deref())? == "all";
+    let total = utxos * assets;
+    if total > MAX_PER_TX * 10 {
+        return Err(Error::Spec(format!(
+            "{utxos} UTxOs of {assets} assets is {total} assets; at most {} fit one pattern",
+            MAX_PER_TX * 10
+        )));
+    }
+    if policies > total {
+        return Err(Error::Spec(format!(
+            "{policies} policies for {total} assets: each policy needs at least one asset"
+        )));
+    }
+    let quantity = i64::try_from(quantity)
+        .map_err(|_| Error::Spec(format!("`quantity` {quantity} is too large")))?;
+    let name_bytes = 1 + total.to_string().len() as u64;
+    // Each source pays its mint's fee and holds the min-UTxO of one split
+    // output (which may hold assets of every policy); the merges, splits and
+    // burn share their fees.
+    let shared = (rounds * 2 + u64::from(burn)).saturating_mul(asset_fee(total));
+    let default = asset_fee(assets)
+        .saturating_add(min_with_assets(
+            assets,
+            policies,
+            name_bytes,
+            quantity as u64,
+        ))
+        .saturating_add(shared.div_ceil(utxos))
+        .saturating_add(ADA);
+    let lovelace = args.lovelace("lovelace", default)?;
+
+    let asset = |j: u64| format!("p{}.a{}", (j - 1) % policies + 1, j);
+    let mut fragment = Fragment::default();
+    for p in 1..=policies {
+        fragment
+            .policies
+            .insert(format!("p{p}"), Policy { after_slot: p });
+    }
+    let mut held = Vec::new();
+    for i in 1..=utxos {
+        fragment
+            .sources
+            .insert(format!("s{i}"), source(owner, lovelace));
+        let mint: Mint = ((i - 1) * assets + 1..=i * assets)
+            .map(|j| (asset(j), quantity))
+            .collect();
+        fragment.txs.insert(
+            format!("mint{i}"),
+            Tx {
+                inputs: vec![format!("s{i}")],
+                mint,
+                outputs: vec![change_to(owner)],
+                ..Tx::default()
+            },
+        );
+        held.push(format!("mint{i}.0"));
+    }
+    for r in 1..=rounds {
+        fragment.txs.insert(
+            format!("merge{r}"),
+            Tx {
+                inputs: held.clone(),
+                outputs: vec![change_to(owner)],
+                ..Tx::default()
+            },
+        );
+        let order = shuffled(total as usize, r);
+        let mut outputs = Vec::new();
+        for k in 0..utxos.saturating_sub(1) {
+            let tokens: Tokens = order[(k * assets) as usize..((k + 1) * assets) as usize]
+                .iter()
+                .map(|j| (asset(*j as u64 + 1), quantity as u64))
+                .collect();
+            outputs.push(OutputSpec {
+                tokens,
+                ..min_to(owner)
+            });
+        }
+        outputs.push(change_to(owner));
+        fragment.txs.insert(
+            format!("split{r}"),
+            Tx {
+                inputs: vec![format!("merge{r}.0")],
+                outputs,
+                ..Tx::default()
+            },
+        );
+        held = (0..utxos).map(|k| format!("split{r}.{k}")).collect();
+    }
+    if burn {
+        fragment.txs.insert(
+            "burn".to_string(),
+            Tx {
+                inputs: held,
+                mint: (1..=total).map(|j| (asset(j), -quantity)).collect(),
+                outputs: vec![change_to(owner)],
+                ..Tx::default()
+            },
+        );
     }
     Ok(fragment)
 }

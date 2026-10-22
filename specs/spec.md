@@ -360,6 +360,18 @@ names.
   whatever those slots are, so a run can build its experiment transactions when it knows
   when it starts (data model §2).
 
+**Native assets**
+
+- **FR-032**: A spec MUST be able to declare minting policies that need no key, each a
+  time-lock native script valid after its own slot (`after_slot`), so every slot gives
+  a distinct policy id; to mint and burn under them (`mint` on a tx); and to pay outputs
+  that hold assets (`tokens`), with the `change` output taking every asset left. Expand
+  MUST reject a tx that pays out or burns more of an asset than its inputs and mint
+  hold. Materialise MUST size `min` and `change` outputs for their assets, MUST fail
+  naming the tx and output when an output's value is larger than the network's
+  `maxValueSize`, and a sweep MUST burn the run's assets rather than move them to a
+  funding address (data model §2).
+
 ### Key Entities
 
 - **Experiment spec**: what a person writes or the importer produces. Parameters,
@@ -422,7 +434,8 @@ names.
   integration in the MVP.
 - Plain payments only in the MVP. The first script kinds are an "always succeeds"
   Plutus validator with a configurable execution budget and native scripts (signature
-  and time-lock), until real validators are chosen.
+  and time-lock), until real validators are chosen. Time-lock minting policies came
+  first (FR-032); spending from script addresses has not been built.
 - Funding is a list of UTxOs the user offers, all spendable by one payment key.
   Materialise uses the smallest prefix of that list that covers the experiment (sources,
   a fee reserve per funding transaction and change) and reports a shortfall before

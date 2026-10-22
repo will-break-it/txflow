@@ -7,6 +7,7 @@
 //! a person or a language model can act on. Building and submitting
 //! transactions is not part of this crate.
 
+pub mod assets;
 pub mod catalogue;
 pub mod check;
 pub mod cost;

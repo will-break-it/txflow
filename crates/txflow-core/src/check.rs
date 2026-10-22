@@ -186,6 +186,7 @@ fn summarise(spec: &ExperimentSpec, ir: &Ir, plan: Option<&Plan>) -> Summary {
     describe_tags(ir, &mut description);
     describe_costs(ir, &mut description);
     describe_windows(ir, &mut description);
+    describe_assets(ir, &mut description);
     if let Some(plan) = plan {
         describe_plan(plan, &mut description);
     }
@@ -325,6 +326,53 @@ fn describe_windows(ir: &Ir, description: &mut Vec<String>) {
     }
     text.push('.');
     description.push(text);
+}
+
+/// Which txs mint and burn native assets, and the most one output holds.
+fn describe_assets(ir: &Ir, description: &mut Vec<String>) {
+    if ir.policies.is_empty() {
+        return;
+    }
+    let (mut minting, mut minted, mut burning, mut burned) = (0, 0, 0, 0);
+    for tx in ir.txs.values() {
+        let up = tx.mint.values().filter(|q| **q > 0).count();
+        let down = tx.mint.len() - up;
+        minting += usize::from(up > 0);
+        minted += up;
+        burning += usize::from(down > 0);
+        burned += down;
+    }
+    description.push(format!(
+        "Native assets under {} policy id{}: {minting} tx{} mint{} {minted} asset{}{}.",
+        ir.policies.len(),
+        plural(ir.policies.len()),
+        plural(minting),
+        if minting == 1 { "s" } else { "" },
+        plural(minted),
+        if burning > 0 {
+            format!(
+                ", {burning} tx{} burn{} {burned}",
+                plural(burning),
+                if burning == 1 { "s" } else { "" }
+            )
+        } else {
+            String::new()
+        }
+    ));
+    let order = ir
+        .derived
+        .as_ref()
+        .map(|d| d.topo_order.as_slice())
+        .unwrap_or_default();
+    if let Ok(held) = crate::assets::flow(ir, order) {
+        if let Some((output, tokens)) = held.iter().max_by_key(|(_, t)| t.len()) {
+            description.push(format!(
+                "The most any output holds is {} distinct asset{} ({output}).",
+                tokens.len(),
+                plural(tokens.len())
+            ));
+        }
+    }
 }
 
 /// One sentence per target, in the order targets are first used.

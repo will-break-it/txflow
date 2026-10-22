@@ -7,6 +7,7 @@ use std::io::Write;
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 
+use crate::assets;
 use crate::cost::CostValue;
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Contention, Derived, Ir, Ref};
@@ -20,6 +21,8 @@ const MAX_RELATIONS: u64 = 2_000_000;
 pub fn derive(ir: &Ir) -> Result<Derived> {
     validate(ir)?;
     let topo_order = topo_order(ir)?;
+    // Every token comes from a mint and no tx pays out more than it holds.
+    assets::flow(ir, &topo_order)?;
 
     // Who spends and who reads each output.
     let mut spent_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -185,10 +188,11 @@ pub fn membership(
 
 /// `blake2b256:<hex>` over the canonical JSON of the IR without `derived`:
 /// object keys sorted, `inputs` and `reference_inputs` sorted (they are sets),
-/// empty `labels`, `reference_inputs` and `metadata`, a missing `color`,
-/// `cost` and `validity`, and a window's `anchor` when it is `start`, omitted,
-/// so a graph without them hashes as it did before they existed. Streamed
-/// into the hasher, so no copy of the IR is made, and independent of struct field order and
+/// empty `labels`, `reference_inputs`, `metadata`, `policies`, `mint` and
+/// `tokens`, a missing `color`, `cost` and `validity`, and a window's `anchor`
+/// when it is `start`, omitted, so a graph without them hashes as it did
+/// before they existed. Streamed into the hasher, so no copy of the IR is
+/// made, and independent of struct field order and
 /// of serde_json's `preserve_order` feature.
 pub fn ir_hash(ir: &Ir) -> Result<String> {
     let mut hasher = Blake2bVar::new(32)
@@ -285,8 +289,33 @@ fn sorted_refs(items: &[String]) -> Vec<&String> {
     refs
 }
 
+/// A map of names to integers, keys in order (a `BTreeMap` already is).
+fn quantities<T: std::fmt::Display>(out: &mut impl Write, map: &BTreeMap<String, T>) -> Result<()> {
+    out.write_all(b"{")?;
+    for (i, (key, quantity)) in map.iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        text(out, key)?;
+        write!(out, ":{quantity}")?;
+    }
+    Ok(out.write_all(b"}")?)
+}
+
 fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
-    out.write_all(b"{\"sources\":{")?;
+    out.write_all(b"{")?;
+    if !ir.policies.is_empty() {
+        out.write_all(b"\"policies\":{")?;
+        for (i, (name, policy)) in ir.policies.iter().enumerate() {
+            if i > 0 {
+                out.write_all(b",")?;
+            }
+            text(out, name)?;
+            write!(out, ":{{\"after_slot\":{}}}", policy.after_slot)?;
+        }
+        out.write_all(b"},")?;
+    }
+    out.write_all(b"\"sources\":{")?;
     for (i, (name, source)) in ir.sources.iter().enumerate() {
         if i > 0 {
             out.write_all(b",")?;
@@ -336,6 +365,10 @@ fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
             out.write_all(b",\"metadata\":")?;
             metadata_json(out, &tx.metadata)?;
         }
+        if !tx.mint.is_empty() {
+            out.write_all(b",\"mint\":")?;
+            quantities(out, &tx.mint)?;
+        }
         out.write_all(b",\"outputs\":[")?;
         for (k, output) in tx.outputs.iter().enumerate() {
             if k > 0 {
@@ -349,6 +382,10 @@ fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
             }
             out.write_all(b",\"to\":")?;
             text(out, &output.to)?;
+            if !output.tokens.is_empty() {
+                out.write_all(b",\"tokens\":")?;
+                quantities(out, &output.tokens)?;
+            }
             out.write_all(b"}")?;
         }
         out.write_all(b"]")?;
@@ -385,6 +422,7 @@ pub(crate) fn validate(ir: &Ir) -> Result<()> {
             return Err(Error::Graph(format!("wallet `{wallet}` is listed twice")));
         }
     }
+    assets::validate(ir)?;
     for (name, source) in &ir.sources {
         if !ir.wallets.contains(&source.owner) {
             return Err(Error::Graph(format!(

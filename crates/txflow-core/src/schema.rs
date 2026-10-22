@@ -16,6 +16,9 @@ pub const NAME: &str = "^[a-z][a-z0-9_]*$";
 /// A reference to a source or to output N of a tx, possibly inside a
 /// pattern's namespace (`chains/a1.0`, `p_2/s`).
 pub const REF: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$";
+/// A native asset, `<policy>.<asset>`: a policy name, possibly inside a
+/// pattern's namespace, and an asset name of 1 to 32 letters, digits, `_` or `-`.
+pub const ASSET: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*\\.[A-Za-z0-9_-]{1,32}$";
 /// A time offset: `0ms`, `250ms`, `2s`.
 pub const DURATION: &str = "^(0|[0-9]+(ms|s))$";
 /// An argument written as a number in a string, or as `{{ expression }}`.
@@ -74,6 +77,13 @@ pub fn schema() -> Value {
                     "type": "object",
                     "additionalProperties": false
                 }
+            },
+            "policies": {
+                "type": "object",
+                "description": "Hand-written minting policies, by name, for `mint` and \
+                    `tokens` in `txs`. Patterns that mint bring their own.",
+                "propertyNames": { "pattern": NAME },
+                "additionalProperties": { "$ref": "#/$defs/policy" }
             },
             "patterns": {
                 "type": "array",
@@ -174,6 +184,14 @@ fn defs() -> Value {
                     "description": "Outputs read but not spent.",
                     "items": { "type": "string", "pattern": REF }
                 },
+                "mint": {
+                    "type": "object",
+                    "description": "Native assets minted (a positive number) or burned (a \
+                        negative one), by `<policy>.<asset>`. What the tx's other outputs do \
+                        not hold goes to its `change` output.",
+                    "propertyNames": { "pattern": ASSET },
+                    "additionalProperties": { "type": "integer", "not": { "const": 0 } }
+                },
                 "outputs": {
                     "type": "array",
                     "minItems": 1,
@@ -200,6 +218,27 @@ fn defs() -> Value {
                 "validity": {
                     "$ref": "#/$defs/validity",
                     "description": "Validity window of this tx, instead of the spec's."
+                }
+            }
+        }),
+    );
+    defs.insert(
+        "policy".to_string(),
+        json!({
+            "type": "object",
+            "description": "A minting policy: a native script that lets any tx valid from \
+                slot `after_slot` on mint or burn under it. Each slot is a different script, \
+                so a different policy id. No key is needed, so anyone can use it: for test \
+                networks.",
+            "additionalProperties": false,
+            "required": ["after_slot"],
+            "properties": {
+                "after_slot": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The first slot a tx using the policy may be valid in. \
+                        A small number (1, 2, 3, …) is long past, so it only tells \
+                        policies apart."
                 }
             }
         }),
@@ -273,6 +312,13 @@ fn defs() -> Value {
                         { "enum": ["min", "change"] }
                     ],
                     "description": "An amount, `min` (the ledger minimum) or `change` (what is left)."
+                },
+                "tokens": {
+                    "type": "object",
+                    "description": "Native assets this output holds, by `<policy>.<asset>`. \
+                        Not on the `change` output, which takes every token left.",
+                    "propertyNames": { "pattern": ASSET },
+                    "additionalProperties": { "type": "integer", "minimum": 1 }
                 }
             }
         }),
