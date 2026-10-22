@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "description": "The relay bridge: the HTTP way to a relay's node, over cardano-cli.",
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22" },
   "scripts": {
     "test": "node --test test/*.test.js",
     "bridge": "node scripts/relay-bridge.mjs"

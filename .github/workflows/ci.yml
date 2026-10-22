@@ -30,6 +30,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: true
       - run: npm test
 
   # Commits, branch names and PR titles carry no co-author or session
