@@ -140,7 +140,7 @@ fn durations_are_bounded() {
     let report = run("  releases:\n    - { select: { pattern: ds }, target: europe, at: 2h }\n");
     assert!(!report.ok);
     assert!(
-        report.errors[0].contains("not a duration"),
+        report.errors[0].contains("longer than one hour"),
         "{:?}",
         report.errors
     );
@@ -354,4 +354,180 @@ fn repetition_needs_both_bounds_and_a_future_until() {
             report.errors
         );
     }
+}
+
+#[test]
+fn offsets_take_units_and_bare_milliseconds() {
+    use txflow_core::schedule::duration;
+    assert_eq!(duration("1m").unwrap(), 60_000);
+    assert_eq!(duration("1h").unwrap(), 3_600_000);
+    assert_eq!(duration("45s").unwrap(), 45_000);
+    assert!(duration("bogus").is_err());
+    let report = run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: 20000, spacing: 500, every: 5000, until: 90s }\n");
+    assert!(report.ok, "{:?}", report.errors);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("`at` is a bare integer")),
+        "{:?}",
+        report.warnings
+    );
+    let at: Vec<u64> = report
+        .plan
+        .expect("plan")
+        .sends
+        .iter()
+        .map(|s| s.at_ms)
+        .collect();
+    // Waves start at 20000, 25000, … every 5000 until 90000, one send each.
+    assert_eq!(at.len(), (90000 - 20000) / 5000);
+    assert_eq!(at[0], 20000);
+    assert_eq!(at[1], 25000);
+}
+
+fn run_with_params(schedule: &str, params: &str) -> Report {
+    let text = format!(
+        "version: 0\nexperiment: race\nseed: 1\nparams: {{ {params} }}\n\
+         wallets: {{ alice: {{}} }}\n\
+         patterns:\n  - {{ id: ds, use: conflict_set, with: {{ k: 3 }} }}\n\
+         schedule:\n{schedule}"
+    );
+    check_within(&text, &Limits::default(), Some(&fixture()))
+}
+
+#[test]
+fn params_substitute_into_offsets_as_milliseconds() {
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: \"{{ wave }}\", until: 90s }\n",
+        "wave: 20000",
+    );
+    assert!(report.ok, "{:?}", report.errors);
+    let at: Vec<u64> = report
+        .plan
+        .expect("plan")
+        .sends
+        .iter()
+        .map(|s| s.at_ms)
+        .collect();
+    assert_eq!(at, vec![0, 20000, 40000, 60000, 80000]);
+}
+
+#[test]
+fn a_unit_next_to_a_param_is_rejected_clearly() {
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: \"{{ wave }}s\", until: 90s }\n",
+        "wave: 20000",
+    );
+    assert!(!report.ok);
+    assert!(
+        report.errors[0].contains("must be the whole offset"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn negative_offsets_get_a_clear_message() {
+    let report = run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: -5 }\n");
+    assert!(!report.ok);
+    assert!(
+        report.errors[0].contains("is not an offset"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn a_spec_survives_a_serialise_round_trip() {
+    // The manual Offset deserializer must not break the derived Serialize:
+    // formatting a spec (the site's to_yaml) has to parse back unchanged.
+    let text = String::from(
+        "version: 0\nexperiment: race\nseed: 1\nwallets: { alice: {} }\n\
+         patterns:\n  - { id: ds, use: conflict_set, with: { k: 3 } }\n\
+         schedule:\n  releases:\n    - { select: { pattern: ds }, target: europe, at: 2s, spacing: 1s }\n",
+    );
+    let first = txflow_core::spec::ExperimentSpec::from_yaml(&text).expect("parse");
+    let written = serde_yaml::to_string(&first).expect("serialise");
+    assert!(
+        !written.contains("!Text") && !written.contains("!Ms"),
+        "{written}"
+    );
+    txflow_core::spec::ExperimentSpec::from_yaml(&written).expect("reparse");
+    let a = check_within(&text, &Limits::default(), Some(&fixture()));
+    let b = check_within(&written, &Limits::default(), Some(&fixture()));
+    assert!(a.ok && b.ok, "{:?} {:?}", a.errors, b.errors);
+    let as_: Vec<u64> = a.plan.unwrap().sends.iter().map(|s| s.at_ms).collect();
+    let bs: Vec<u64> = b.plan.unwrap().sends.iter().map(|s| s.at_ms).collect();
+    assert_eq!(as_, bs);
+}
+
+#[test]
+fn offsets_sharing_the_one_hour_cap_in_every_spelling() {
+    for spelling in [
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, spacing: 7200000 }\n",
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, spacing: 7200000ms }\n",
+    ] {
+        let report = run(spelling);
+        assert!(!report.ok, "{:?}", report.errors);
+        assert!(
+            report.errors[0].contains("longer than one hour"),
+            "{:?}",
+            report.errors
+        );
+    }
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, spacing: \"{{ big }}\" }\n",
+        "big: 3600001",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("longer than one hour"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn a_zero_every_is_rejected() {
+    let report = run(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: 0, until: 10s }\n",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("`every` resolves to 0"),
+        "{:?}",
+        report.errors
+    );
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: \"{{ wave }}\", until: 10s }\n",
+        "wave: 0",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("`every` resolves to 0"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn schedules_cap_their_total_sends() {
+    let report = run(
+        "  releases:\n    - { select: { pattern: ds }, target: europe, every: 5, until: 1h }\n",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("plans at most"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn signed_offsets_no_longer_slip_past_the_schema() {
+    // YAML's own reader turns unquoted `+500` into a number, so `check` and
+    // the schema both accept a leading plus on bare integers.
+    let report =
+        run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: +500 }\n");
+    assert!(report.ok, "{:?}", report.errors);
+    let report =
+        run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: ' 500 ' }\n");
+    assert!(report.ok, "{:?}", report.errors);
 }
