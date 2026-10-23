@@ -314,3 +314,44 @@ fn a_temporary_relay_says_when_it_goes_in_utc() {
         );
     }
 }
+
+#[test]
+fn a_release_repeats_its_selection_each_wave() {
+    let report = run("  releases:\n    - { select: { pattern: ds }, target: europe, every: 20ms, until: 50ms }\n");
+    assert!(report.ok, "{:?}", report.errors);
+    let plan = report.plan.expect("plan");
+    let times: Vec<u64> = plan.sends.iter().map(|s| s.at_ms).collect();
+    // conflict_set k:3 sends three txs per wave; waves fire at 0, 20 and 40 ms
+    // (a 60 ms wave is not before `until: 50ms`).
+    assert_eq!(times, vec![0, 0, 0, 20, 20, 20, 40, 40, 40]);
+    assert!(plan.sends.iter().all(|s| s.via == Via::N2c));
+    let report = run("  releases:\n    - { select: { pattern: ds }, target: europe, every: 20ms, until: 60ms }\n");
+    assert!(report.ok, "{:?}", report.errors);
+    assert_eq!(report.plan.expect("plan").sends.len(), 9);
+}
+
+#[test]
+fn repetition_needs_both_bounds_and_a_future_until() {
+    for (release, message) in [
+        (
+            "{ select: { pattern: ds }, target: europe, every: 20ms }",
+            "`every` needs `until`",
+        ),
+        (
+            "{ select: { pattern: ds }, target: europe, until: 50ms }",
+            "`until` needs `every`",
+        ),
+        (
+            "{ select: { pattern: ds }, target: europe, every: 20ms, until: 0ms }",
+            "never fires",
+        ),
+    ] {
+        let report = run(&format!("  releases:\n    - {release}\n"));
+        assert!(!report.ok, "{release}");
+        assert!(
+            report.errors.iter().any(|e| e.contains(message)),
+            "{release}: {:?}",
+            report.errors
+        );
+    }
+}

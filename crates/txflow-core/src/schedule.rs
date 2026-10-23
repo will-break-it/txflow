@@ -43,6 +43,14 @@ pub struct Release {
     /// Gap between consecutive selected transactions, in dependency order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spacing: Option<String>,
+    /// Repeat the release this often, re-counting `release-tip` windows from
+    /// the tip before each fire. Needs `until`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<String>,
+    /// Last offset a repeating release fires at; a wave starts only before it.
+    /// Needs `every`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 
 /// Which transactions a release sends. Exactly one field is set.
@@ -141,22 +149,61 @@ pub fn plan(
         let target = check_target(release, schedule, network).map_err(at)?;
         let start = duration(release.at.as_deref().unwrap_or("0ms")).map_err(at)?;
         let spacing = duration(release.spacing.as_deref().unwrap_or("0ms")).map_err(at)?;
-        let chosen = select(&release.select, spec, ir, &order).map_err(at)?;
-        for (k, tx) in chosen.iter().enumerate() {
-            let at_ms = start.saturating_add(spacing.saturating_mul(k as u64));
-            if at_ms > MAX_OFFSET_MS {
+        let every = match &release.every {
+            None => 0,
+            Some(e) => duration(e).map_err(at)?,
+        };
+        let until = match &release.until {
+            None => None,
+            Some(u) => Some(duration(u).map_err(at)?),
+        };
+        if every == 0 && until.is_some() {
+            return Err(at("`until` needs `every`".to_string()));
+        }
+        let until = if every > 0 {
+            let until = until.ok_or_else(|| at("`every` needs `until`".to_string()))?;
+            if until <= start {
                 return Err(at(format!(
-                    "`{tx}` would be sent {} after the start; the most is one hour",
-                    show_ms(at_ms)
+                    "`every` with `until` {} never fires: `until` must be after `at` {}",
+                    show_ms(until),
+                    show_ms(start)
                 )));
             }
-            released.insert(tx.clone());
-            sends.push(Send {
-                tx: tx.clone(),
-                target: target.clone(),
-                via: release.via,
-                at_ms,
-            });
+            Some(until)
+        } else {
+            None
+        };
+        let chosen = select(&release.select, spec, ir, &order).map_err(at)?;
+        // One pass per wave: a repeated release re-runs its selection from the
+        // top each period, so a `release-tip` window can re-anchor to the tip.
+        let mut wave: u64 = 0;
+        loop {
+            let wave_start = start.saturating_add(every.saturating_mul(wave));
+            if let Some(until) = until {
+                if wave_start >= until {
+                    break;
+                }
+            }
+            for (k, tx) in chosen.iter().enumerate() {
+                let at_ms = wave_start.saturating_add(spacing.saturating_mul(k as u64));
+                if at_ms > MAX_OFFSET_MS {
+                    return Err(at(format!(
+                        "`{tx}` would be sent {} after the start; the most is one hour",
+                        show_ms(at_ms)
+                    )));
+                }
+                released.insert(tx.clone());
+                sends.push(Send {
+                    tx: tx.clone(),
+                    target: target.clone(),
+                    via: release.via,
+                    at_ms,
+                });
+            }
+            if every == 0 {
+                break;
+            }
+            wave += 1;
         }
     }
     // Stable: equal times keep release order.

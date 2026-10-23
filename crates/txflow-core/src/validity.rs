@@ -41,6 +41,12 @@ pub enum Anchor {
     Start,
     /// The slot of the tip block when the run's schedule starts.
     Tip,
+    /// The slot of the tip block when the release that sends the tx fires.
+    /// The replayer refreshes the tip before each wave, so a repeated release
+    /// re-anchors the window as the chain advances; [`Validity::absolute`]
+    /// cannot resolve it, because the run does not know that tip offline.
+    #[serde(rename = "release-tip")]
+    ReleaseTip,
 }
 
 impl Anchor {
@@ -48,11 +54,21 @@ impl Anchor {
         match self {
             Anchor::Start => "start",
             Anchor::Tip => "tip",
+            Anchor::ReleaseTip => "release-tip",
         }
     }
 
     fn is_start(&self) -> bool {
         *self == Anchor::Start
+    }
+
+    /// Index into the per-anchor arrays in [`warnings`].
+    fn index(self) -> usize {
+        match self {
+            Anchor::Start => 0,
+            Anchor::Tip => 1,
+            Anchor::ReleaseTip => 2,
+        }
     }
 }
 
@@ -116,6 +132,7 @@ impl Validity {
         let anchor = match self.anchor {
             Anchor::Start => "the start",
             Anchor::Tip => "the tip",
+            Anchor::ReleaseTip => "the tip at release",
         };
         match (self.from, self.until) {
             (Some(from), Some(until)) => format!("slots {from} to {until} after {anchor}"),
@@ -135,6 +152,7 @@ impl Validity {
         let base = match self.anchor {
             Anchor::Start => start?,
             Anchor::Tip => tip?,
+            Anchor::ReleaseTip => return None,
         };
         Some((
             self.from.map(|f| base.saturating_add(f)),
@@ -275,12 +293,12 @@ pub fn warnings(ir: &Ir, plan: Option<&Plan>, slots: Option<&Slots>) -> Vec<Stri
     };
     // For each tx, the latest-opening window among the txs it follows, per
     // anchor (start, tip): the slot it opens at and whose it is.
-    let mut follows: BTreeMap<&str, [Option<(u64, &str)>; 2]> = BTreeMap::new();
+    let mut follows: BTreeMap<&str, [Option<(u64, &str)>; 3]> = BTreeMap::new();
     for name in &order {
         let Some((name, tx)) = ir.txs.get_key_value(name) else {
             continue;
         };
-        let mut latest: [Option<(u64, &str)>; 2] = [None, None];
+        let mut latest: [Option<(u64, &str)>; 3] = [None, None, None];
         let mut parents = vec![];
         for input in tx.inputs.iter().chain(&tx.reference_inputs) {
             let Ok(Ref::Output { tx: parent, .. }) = Ref::parse(input) else {
@@ -297,7 +315,7 @@ pub fn warnings(ir: &Ir, plan: Option<&Plan>, slots: Option<&Slots>) -> Vec<Stri
                 ..
             }) = ptx.validity
             {
-                let slot = &mut seen[anchor as usize];
+                let slot = &mut seen[anchor.index()];
                 if slot.is_none_or(|(at, _)| from > at) {
                     *slot = Some((from, parent.as_str()));
                 }
@@ -317,7 +335,7 @@ pub fn warnings(ir: &Ir, plan: Option<&Plan>, slots: Option<&Slots>) -> Vec<Stri
         let Some(until) = window.until else {
             continue;
         };
-        if window.anchor == Anchor::Tip && until <= 1 {
+        if matches!(window.anchor, Anchor::Tip | Anchor::ReleaseTip) && until <= 1 {
             warnings.push(format!(
                 "`{name}` can never land: its window closes at slot {until} after the tip, \
                  and a node checks a new tx against the slot after its tip"
@@ -329,9 +347,10 @@ pub fn warnings(ir: &Ir, plan: Option<&Plan>, slots: Option<&Slots>) -> Vec<Stri
         let against: &[Anchor] = match window.anchor {
             Anchor::Start => &[Anchor::Start],
             Anchor::Tip => &[Anchor::Tip, Anchor::Start],
+            Anchor::ReleaseTip => &[Anchor::ReleaseTip],
         };
         let blocked = against.iter().find_map(|&anchor| {
-            latest[anchor as usize]
+            latest[anchor.index()]
                 .filter(|&(from, _)| until <= from)
                 .map(|(from, who)| (from, who, anchor))
         });
@@ -373,6 +392,11 @@ pub fn warnings(ir: &Ir, plan: Option<&Plan>, slots: Option<&Slots>) -> Vec<Stri
             send.target,
             show_ms(send.at_ms)
         );
+        // A window counted from the tip at release has no static base to judge
+        // the send against here: the replayer fixes the slots per wave.
+        if window.anchor == Anchor::ReleaseTip {
+            continue;
+        }
         if let Some(until) = window.until {
             if send.at_ms >= until.saturating_mul(slot_ms) {
                 warnings.push(format!(

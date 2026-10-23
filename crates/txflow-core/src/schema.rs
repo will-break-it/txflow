@@ -397,6 +397,19 @@ fn schedule_schema() -> Value {
                             "default": "0ms",
                             "description": "Gap between consecutive selected transactions, in \
                                 dependency order."
+                        },
+                        "every": {
+                            "type": "string",
+                            "pattern": DURATION,
+                            "description": "Repeat the release this often; each wave re-sends \
+                                the selection from the top, and `release-tip` windows re-count \
+                                from the tip before each wave. Needs `until`."
+                        },
+                        "until": {
+                            "type": "string",
+                            "pattern": DURATION,
+                            "description": "A wave of a repeating release starts only before \
+                                this offset from the start of the run. Needs `every`."
                         }
                     }
                 }
@@ -546,13 +559,15 @@ fn validity_defs(defs: &mut Map<String, Value>) {
             "until": described(&value, "First slot the tx is no longer valid in, counted \
                 from `anchor`: the ledger's invalid_hereafter. Left out: no upper bound."),
             "anchor": {
-                "enum": ["start", "tip"],
+                "enum": ["start", "tip", "release-tip"],
                 "default": "start",
                 "description": "What `from` and `until` count from: `start`, the slot the \
-                    schedule starts in (`at: 0ms`), or `tip`, the slot of the tip block \
-                    then. A node checks a tx against the slot after its tip, which trails \
-                    the clock by the time since the last block, so `tip` is what edges \
-                    near 0 mean to a node."
+                    schedule starts in (`at: 0ms`); `tip`, the slot of the tip block then; \
+                    or `release-tip`, the slot of the tip block when the release that sends \
+                    the tx fires (a repeated release re-reads it each wave). A node checks a \
+                    tx against the slot after its tip, which trails the clock by the time \
+                    since the last block, so `tip` and `release-tip` are what edges near 0 \
+                    mean to a node."
             }
         })
     };

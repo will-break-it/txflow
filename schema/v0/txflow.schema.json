@@ -1058,6 +1058,11 @@
                 "pattern": "^(0|[0-9]+(ms|s))$",
                 "type": "string"
               },
+              "every": {
+                "description": "Repeat the release this often; each wave re-sends the selection from the top, and `release-tip` windows re-count from the tip before each wave. Needs `until`.",
+                "pattern": "^(0|[0-9]+(ms|s))$",
+                "type": "string"
+              },
               "select": {
                 "description": "Which transactions to send: exactly one of `label`, `names` or `pattern`.",
                 "oneOf": [
@@ -1118,6 +1123,11 @@
               "target": {
                 "description": "A relay of the site's network, or a name in `targets`.",
                 "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "until": {
+                "description": "A wave of a repeating release starts only before this offset from the start of the run. Needs `every`.",
+                "pattern": "^(0|[0-9]+(ms|s))$",
                 "type": "string"
               },
               "via": {
@@ -1276,10 +1286,11 @@
       "properties": {
         "anchor": {
           "default": "start",
-          "description": "What `from` and `until` count from: `start`, the slot the schedule starts in (`at: 0ms`), or `tip`, the slot of the tip block then. A node checks a tx against the slot after its tip, which trails the clock by the time since the last block, so `tip` is what edges near 0 mean to a node.",
+          "description": "What `from` and `until` count from: `start`, the slot the schedule starts in (`at: 0ms`); `tip`, the slot of the tip block then; or `release-tip`, the slot of the tip block when the release that sends the tx fires (a repeated release re-reads it each wave). A node checks a tx against the slot after its tip, which trails the clock by the time since the last block, so `tip` and `release-tip` are what edges near 0 mean to a node.",
           "enum": [
             "start",
-            "tip"
+            "tip",
+            "release-tip"
           ]
         },
         "from": {
@@ -1315,10 +1326,11 @@
       "properties": {
         "anchor": {
           "default": "start",
-          "description": "What `from` and `until` count from: `start`, the slot the schedule starts in (`at: 0ms`), or `tip`, the slot of the tip block then. A node checks a tx against the slot after its tip, which trails the clock by the time since the last block, so `tip` is what edges near 0 mean to a node.",
+          "description": "What `from` and `until` count from: `start`, the slot the schedule starts in (`at: 0ms`); `tip`, the slot of the tip block then; or `release-tip`, the slot of the tip block when the release that sends the tx fires (a repeated release re-reads it each wave). A node checks a tx against the slot after its tip, which trails the clock by the time since the last block, so `tip` and `release-tip` are what edges near 0 mean to a node.",
           "enum": [
             "start",
-            "tip"
+            "tip",
+            "release-tip"
           ]
         },
         "from": {

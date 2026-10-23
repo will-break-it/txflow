@@ -133,3 +133,16 @@ fn a_spec_without_windows_ignores_the_slots() {
     assert_eq!(with, odd);
     assert_eq!(with.slots, None);
 }
+
+#[test]
+fn a_release_tip_window_is_not_fixed_offline() {
+    let text = "version: 0\nexperiment: r\nseed: 1\nwallets: { alice: {} }\n\
+        sources: { s: { owner: alice, lovelace: 9000000 } }\ntxs:\n  \
+        t: { inputs: [s], outputs: [{ to: alice, lovelace: change }], \
+        validity: { until: 2, anchor: release-tip } }\n";
+    let error = build(text, &context(slots(5_000, 4_990)))
+        .expect_err("refused")
+        .to_string();
+    assert!(error.contains("`anchor: release-tip`"), "{error}");
+    assert!(error.contains("`anchor: tip`"), "{error}");
+}
