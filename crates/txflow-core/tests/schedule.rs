@@ -461,3 +461,73 @@ fn a_spec_survives_a_serialise_round_trip() {
     let bs: Vec<u64> = b.plan.unwrap().sends.iter().map(|s| s.at_ms).collect();
     assert_eq!(as_, bs);
 }
+
+#[test]
+fn offsets_sharing_the_one_hour_cap_in_every_spelling() {
+    for spelling in [
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, spacing: 7200000 }\n",
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, spacing: 7200000ms }\n",
+    ] {
+        let report = run(spelling);
+        assert!(!report.ok, "{:?}", report.errors);
+        assert!(
+            report.errors[0].contains("longer than one hour"),
+            "{:?}",
+            report.errors
+        );
+    }
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, spacing: \"{{ big }}\" }\n",
+        "big: 3600001",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("longer than one hour"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn a_zero_every_is_rejected() {
+    let report = run(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: 0, until: 10s }\n",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("`every` resolves to 0"),
+        "{:?}",
+        report.errors
+    );
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: \"{{ wave }}\", until: 10s }\n",
+        "wave: 0",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("`every` resolves to 0"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn schedules_cap_their_total_sends() {
+    let report = run(
+        "  releases:\n    - { select: { pattern: ds }, target: europe, every: 5, until: 1h }\n",
+    );
+    assert!(
+        !report.ok && report.errors[0].contains("plans at most"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn signed_offsets_no_longer_slip_past_the_schema() {
+    // YAML's own reader turns unquoted `+500` into a number, so `check` and
+    // the schema both accept a leading plus on bare integers.
+    let report =
+        run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: +500 }\n");
+    assert!(report.ok, "{:?}", report.errors);
+    let report =
+        run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: ' 500 ' }\n");
+    assert!(report.ok, "{:?}", report.errors);
+}

@@ -515,7 +515,9 @@ schedule:
     observe_for: 120s                     # how long to watch for on-chain inclusion
 ```
 
-`at` and `spacing` are `0`, `<n>ms` or `<n>s`, at most one hour. `every` repeats a
+`at` and `spacing` are `0`, `<n>ms`, `<n>s`, `<n>m` or `<n>h` — or a bare integer of
+milliseconds, and a `{{ param }}` must be the whole offset and substitutes as milliseconds —
+at most one hour in all spellings (`check` warns on bare integers). `every` repeats a
 release: each wave re-sends the selection from the top (in topological order, spaced as
 before), and a `release-tip` window re-counts from the tip the replayer refreshes before
 that wave. `until` is the last offset a wave may start at; a wave starts only before it.

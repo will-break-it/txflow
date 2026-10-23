@@ -20,11 +20,13 @@ pub const REF: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$
 /// pattern's namespace, and an asset name of 1 to 32 letters, digits, `_` or `-`.
 pub const ASSET: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*\\.[A-Za-z0-9_-]{1,32}$";
 /// A time offset: `0ms`, `250ms`, `2s`.
+/// A duration with units, the shape `observe_for` takes: no bare numbers, no
+/// templates — nothing parses that field from a spec.
 pub const DURATION: &str = "^(0|[0-9]+(ms|s|m|h))$";
 /// Schedule offsets may additionally be a bare number of milliseconds or a
-/// `{{ param }}` (which substitutes as milliseconds): three spellings that
-/// `observe_for` does not share, because no code parses that field from a spec.
-pub const OFFSET: &str = "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$";
+/// `{{ param }}` (which substitutes as milliseconds), and may carry space
+/// around the value, all of which `check` accepts.
+pub const OFFSET: &str = "^[ \t]*(0|\\+?[0-9]+(ms|s|m|h)|\\+?[0-9]+|\\{\\{[^{}]*\\}\\})[ \t]*$";
 /// An argument written as a number in a string, or as `{{ expression }}`.
 const ARG_TEXT: &str = "^\\s*([0-9]+|\\{\\{[^{}]*\\}\\})\\s*$";
 
