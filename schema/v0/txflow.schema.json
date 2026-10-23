@@ -1057,7 +1057,7 @@
                 "description": "Offset from the start of the run: `200ms`, `2s`, `1m`, `1h`, a bare number of milliseconds, or `{{ param }}` alone (its integer substitutes as milliseconds; no unit may sit next to it). `check` warns on bare integers, which are easy to misread.",
                 "oneOf": [
                   {
-                    "pattern": "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$",
+                    "pattern": "^[ \t]*(0|\\+?[0-9]+(ms|s|m|h)|\\+?[0-9]+|\\{\\{[^{}]*\\}\\})[ \t]*$",
                     "type": "string"
                   },
                   {
@@ -1070,7 +1070,7 @@
                 "description": "Repeat the release this often; each wave re-sends the selection from the top, and `release-tip` windows re-count from the tip before each wave. Needs `until`.",
                 "oneOf": [
                   {
-                    "pattern": "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$",
+                    "pattern": "^[ \t]*(0|\\+?[0-9]+(ms|s|m|h)|\\+?[0-9]+|\\{\\{[^{}]*\\}\\})[ \t]*$",
                     "type": "string"
                   },
                   {
@@ -1135,7 +1135,7 @@
                 "description": "Gap between consecutive selected transactions, in dependency order.",
                 "oneOf": [
                   {
-                    "pattern": "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$",
+                    "pattern": "^[ \t]*(0|\\+?[0-9]+(ms|s|m|h)|\\+?[0-9]+|\\{\\{[^{}]*\\}\\})[ \t]*$",
                     "type": "string"
                   },
                   {
@@ -1153,7 +1153,7 @@
                 "description": "A wave of a repeating release starts only before this offset from the start of the run. Needs `every`.",
                 "oneOf": [
                   {
-                    "pattern": "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$",
+                    "pattern": "^[ \t]*(0|\\+?[0-9]+(ms|s|m|h)|\\+?[0-9]+|\\{\\{[^{}]*\\}\\})[ \t]*$",
                     "type": "string"
                   },
                   {

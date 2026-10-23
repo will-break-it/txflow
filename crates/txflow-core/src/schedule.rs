@@ -42,10 +42,51 @@ pub enum Offset {
 }
 
 impl Offset {
-    pub fn text(&self) -> String {
+    /// The literal bare number this offset spells, before any template:
+    /// `check` warns on it because `2` for 2 ms is easily misread. Unit text
+    /// and `{{ }}` templates are None.
+    pub fn literal_bare_ms(&self) -> Option<u64> {
         match self {
-            Offset::Ms(ms) => ms.to_string(),
-            Offset::Text(text) => text.clone(),
+            Offset::Ms(ms) => Some(*ms),
+            Offset::Text(text) => {
+                let text = text.trim();
+                if text.contains("{{") {
+                    None
+                } else {
+                    text.parse().ok()
+                }
+            }
+        }
+    }
+
+    /// This offset in milliseconds, with the same one-hour cap `duration`
+    /// applies to unit text. Errors name what was written, not the field; the
+    /// caller prefixes the field.
+    fn resolve_ms(&self, params: &BTreeMap<String, i64>) -> std::result::Result<u64, String> {
+        let capped = |ms: u64, written: &str| {
+            if ms > MAX_OFFSET_MS {
+                return Err(format!("`{written}` is longer than one hour"));
+            }
+            Ok(ms)
+        };
+        match self {
+            Offset::Ms(ms) => capped(*ms, &ms.to_string()),
+            Offset::Text(text) => {
+                let trimmed = text.trim();
+                if trimmed.contains("{{") {
+                    if !(trimmed.starts_with("{{") && trimmed.ends_with("}}")) {
+                        return Err(format!(
+                            "`{trimmed}`: a `{{{{ param }}}}` must be the whole offset — it is \
+                             already milliseconds, so no unit may sit next to it"
+                        ));
+                    }
+                    expr::eval(&serde_yaml::Value::String(trimmed.to_string()), params)
+                        .map_err(|e| format!("`{trimmed}`: {e}"))
+                        .and_then(|ms| capped(ms, trimmed))
+                } else {
+                    duration(trimmed)
+                }
+            }
         }
     }
 }
@@ -173,6 +214,11 @@ pub struct Send {
 /// Longest offset a schedule may use: one hour.
 pub const MAX_OFFSET_MS: u64 = 3_600_000;
 
+/// The most sends one schedule may plan. A tight `every` with a long `until`
+/// multiplies waves unboundedly (`every: 5, until: 1h` would be 720k sends);
+/// cap it so `check` and the editor's wasm stay cheap.
+pub const MAX_SENDS: usize = 200_000;
+
 /// Resolve `schedule` against the expanded graph and, when given, the
 /// network whose relays it may target.
 pub fn plan(
@@ -191,52 +237,33 @@ pub fn plan(
     for (i, release) in schedule.releases.iter().enumerate() {
         let at = |e: String| Error::Spec(format!("schedule release {}: {e}", i + 1));
         let target = check_target(release, schedule, network).map_err(at)?;
-        // A template must be the whole offset; substitution yields milliseconds.
-        let ms_of = |offset: &Offset, field: &str| -> Result<u64> {
+        let ms_of = |offset: Option<&Offset>, field: &str| -> Result<u64> {
             match offset {
-                Offset::Ms(ms) => Ok(*ms),
-                Offset::Text(text) => {
-                    let trimmed = text.trim();
-                    if trimmed.contains("{{") {
-                        if !(trimmed.starts_with("{{") && trimmed.ends_with("}}")) {
-                            return Err(at(format!(
-                                "`{field}` is `{text}`: a `{{{{ param }}}}` must be the whole \
-                                 offset — it is already milliseconds, so no unit may sit \
-                                 next to it"
-                            )));
-                        }
-                        expr::eval(
-                            &serde_yaml::Value::String(trimmed.to_string()),
-                            &spec.params,
-                        )
-                        .map_err(|e| at(e.to_string()))
-                    } else {
-                        duration(trimmed).map_err(at)
-                    }
-                }
+                None => Ok(0),
+                Some(offset) => offset
+                    .resolve_ms(&spec.params)
+                    .map_err(|e| at(format!("`{field}`: {e}"))),
             }
         };
-        let start = ms_of(
-            release
-                .at
-                .as_ref()
-                .unwrap_or(&Offset::Text("0ms".to_string())),
-            "at",
-        )?;
-        let spacing = ms_of(
-            release
-                .spacing
-                .as_ref()
-                .unwrap_or(&Offset::Text("0ms".to_string())),
-            "spacing",
-        )?;
+        let start = ms_of(release.at.as_ref(), "at")?;
+        let spacing = ms_of(release.spacing.as_ref(), "spacing")?;
         let every = match &release.every {
             None => 0,
-            Some(e) => ms_of(e, "every")?,
+            Some(_) => {
+                let every = ms_of(release.every.as_ref(), "every")?;
+                if every == 0 {
+                    return Err(at(
+                        "`every` resolves to 0: a repeating release needs `every` of at least \
+                         1ms; leave `every` out for a one-off release"
+                            .to_string(),
+                    ));
+                }
+                every
+            }
         };
         let until = match &release.until {
             None => None,
-            Some(u) => Some(ms_of(u, "until")?),
+            Some(_) => Some(ms_of(release.until.as_ref(), "until")?),
         };
         if every == 0 && until.is_some() {
             return Err(at("`until` needs `every`".to_string()));
@@ -266,6 +293,12 @@ pub fn plan(
                 }
             }
             for (k, tx) in chosen.iter().enumerate() {
+                if sends.len() >= MAX_SENDS {
+                    return Err(at(format!(
+                        "a schedule plans at most {MAX_SENDS} sends; shorten `until` or \
+                         lengthen `every` (or split the spec)"
+                    )));
+                }
                 let at_ms = wave_start.saturating_add(spacing.saturating_mul(k as u64));
                 if at_ms > MAX_OFFSET_MS {
                     return Err(at(format!(

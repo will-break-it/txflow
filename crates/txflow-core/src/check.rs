@@ -83,20 +83,8 @@ pub fn check_within(text: &str, limits: &Limits, network: Option<&Network>) -> R
                         ("every", &release.every),
                         ("until", &release.until),
                     ] {
-                        let bare = match value {
-                            Some(schedule::Offset::Ms(ms)) => Some(*ms),
-                            Some(schedule::Offset::Text(text)) => {
-                                // A quoted bare number and `{{ }}` templates go
-                                // the text path: warn on the first, never on
-                                // the second.
-                                text.trim()
-                                    .parse::<u64>()
-                                    .ok()
-                                    .filter(|_| !text.contains("{{"))
-                            }
-                            None => None,
-                        };
-                        if let Some(ms) = bare {
+                        if let Some(ms) = value.as_ref().and_then(schedule::Offset::literal_bare_ms)
+                        {
                             if ms > 0 {
                                 warnings.push(format!(
                                     "schedule release {} `{field}` is a bare integer: it reads \
