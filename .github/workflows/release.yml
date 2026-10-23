@@ -35,8 +35,12 @@ jobs:
 
           Reference: https://txflow.fun/spec.html
           NOTES
-          gh release create "$TAG" --title "Spec v${spec}" --notes-file notes.md \
-            "$dir/txflow.schema.json" "$dir/catalogue.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$dir/txflow.schema.json" "$dir/catalogue.md" --clobber
+          else
+            gh release create "$TAG" --title "Spec v${spec}" --notes-file notes.md \
+              "$dir/txflow.schema.json" "$dir/catalogue.md"
+          fi
 
   cli:
     if: startsWith(github.ref_name, 'v')
@@ -89,5 +93,9 @@ jobs:
 
           Reads spec version ${schema#schema/v}. The schema is attached; the reference is at https://txflow.fun/spec.html.
           NOTES
-          gh release create "$TAG" --title "txflow $TAG" --notes-file notes.md \
-            txflow-*.tar.gz "$schema/txflow.schema.json"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" txflow-*.tar.gz "$schema/txflow.schema.json" --clobber
+          else
+            gh release create "$TAG" --title "txflow $TAG" --notes-file notes.md \
+              txflow-*.tar.gz "$schema/txflow.schema.json"
+          fi
