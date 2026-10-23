@@ -362,10 +362,17 @@ fn offsets_take_units_and_bare_milliseconds() {
     assert_eq!(duration("1m").unwrap(), 60_000);
     assert_eq!(duration("1h").unwrap(), 3_600_000);
     assert_eq!(duration("45s").unwrap(), 45_000);
-    assert_eq!(duration("20000").unwrap(), 20_000);
     assert!(duration("bogus").is_err());
     let report = run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: 20000, spacing: 500, every: 5000, until: 90s }\n");
     assert!(report.ok, "{:?}", report.errors);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("`at` is a bare integer")),
+        "{:?}",
+        report.warnings
+    );
     let at: Vec<u64> = report
         .plan
         .expect("plan")
@@ -377,4 +384,56 @@ fn offsets_take_units_and_bare_milliseconds() {
     assert_eq!(at.len(), (90000 - 20000) / 5000);
     assert_eq!(at[0], 20000);
     assert_eq!(at[1], 25000);
+}
+
+fn run_with_params(schedule: &str, params: &str) -> Report {
+    let text = format!(
+        "version: 0\nexperiment: race\nseed: 1\nparams: {{ {params} }}\n\
+         wallets: {{ alice: {{}} }}\n\
+         patterns:\n  - {{ id: ds, use: conflict_set, with: {{ k: 3 }} }}\n\
+         schedule:\n{schedule}"
+    );
+    check_within(&text, &Limits::default(), Some(&fixture()))
+}
+
+#[test]
+fn params_substitute_into_offsets_as_milliseconds() {
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: \"{{ wave }}\", until: 90s }\n",
+        "wave: 20000",
+    );
+    assert!(report.ok, "{:?}", report.errors);
+    let at: Vec<u64> = report
+        .plan
+        .expect("plan")
+        .sends
+        .iter()
+        .map(|s| s.at_ms)
+        .collect();
+    assert_eq!(at, vec![0, 20000, 40000, 60000, 80000]);
+}
+
+#[test]
+fn a_unit_next_to_a_param_is_rejected_clearly() {
+    let report = run_with_params(
+        "  releases:\n    - { select: { names: [ds/x1] }, target: europe, every: \"{{ wave }}s\", until: 90s }\n",
+        "wave: 20000",
+    );
+    assert!(!report.ok);
+    assert!(
+        report.errors[0].contains("must be the whole offset"),
+        "{:?}",
+        report.errors
+    );
+}
+
+#[test]
+fn negative_offsets_get_a_clear_message() {
+    let report = run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: -5 }\n");
+    assert!(!report.ok);
+    assert!(
+        report.errors[0].contains("is not an offset"),
+        "{:?}",
+        report.errors
+    );
 }
