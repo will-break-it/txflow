@@ -437,3 +437,27 @@ fn negative_offsets_get_a_clear_message() {
         report.errors
     );
 }
+
+#[test]
+fn a_spec_survives_a_serialise_round_trip() {
+    // The manual Offset deserializer must not break the derived Serialize:
+    // formatting a spec (the site's to_yaml) has to parse back unchanged.
+    let text = String::from(
+        "version: 0\nexperiment: race\nseed: 1\nwallets: { alice: {} }\n\
+         patterns:\n  - { id: ds, use: conflict_set, with: { k: 3 } }\n\
+         schedule:\n  releases:\n    - { select: { pattern: ds }, target: europe, at: 2s, spacing: 1s }\n",
+    );
+    let first = txflow_core::spec::ExperimentSpec::from_yaml(&text).expect("parse");
+    let written = serde_yaml::to_string(&first).expect("serialise");
+    assert!(
+        !written.contains("!Text") && !written.contains("!Ms"),
+        "{written}"
+    );
+    txflow_core::spec::ExperimentSpec::from_yaml(&written).expect("reparse");
+    let a = check_within(&text, &Limits::default(), Some(&fixture()));
+    let b = check_within(&written, &Limits::default(), Some(&fixture()));
+    assert!(a.ok && b.ok, "{:?} {:?}", a.errors, b.errors);
+    let as_: Vec<u64> = a.plan.unwrap().sends.iter().map(|s| s.at_ms).collect();
+    let bs: Vec<u64> = b.plan.unwrap().sends.iter().map(|s| s.at_ms).collect();
+    assert_eq!(as_, bs);
+}

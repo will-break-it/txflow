@@ -1042,7 +1042,7 @@
           "properties": {
             "observe_for": {
               "description": "How long to watch for inclusion after the last send.",
-              "pattern": "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$",
+              "pattern": "^(0|[0-9]+(ms|s|m|h))$",
               "type": "string"
             },
             "skip_descendants_of_rejected": {

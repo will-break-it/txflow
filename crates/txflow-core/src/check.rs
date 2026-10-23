@@ -83,15 +83,30 @@ pub fn check_within(text: &str, limits: &Limits, network: Option<&Network>) -> R
                         ("every", &release.every),
                         ("until", &release.until),
                     ] {
-                        if let Some(schedule::Offset::Ms(ms)) = value {
-                            warnings.push(format!(
-                                "schedule release {} `{field}` is a bare integer: it reads \
-                                 as {ms} ms ({}); write `{}` to be explicit (a `{{{{ }}}}` \
-                                 param substitutes as milliseconds too)",
-                                i + 1,
-                                schedule::show_ms(*ms),
-                                schedule::show_ms(*ms),
-                            ));
+                        let bare = match value {
+                            Some(schedule::Offset::Ms(ms)) => Some(*ms),
+                            Some(schedule::Offset::Text(text)) => {
+                                // A quoted bare number and `{{ }}` templates go
+                                // the text path: warn on the first, never on
+                                // the second.
+                                text.trim()
+                                    .parse::<u64>()
+                                    .ok()
+                                    .filter(|_| !text.contains("{{"))
+                            }
+                            None => None,
+                        };
+                        if let Some(ms) = bare {
+                            if ms > 0 {
+                                warnings.push(format!(
+                                    "schedule release {} `{field}` is a bare integer: it reads \
+                                     as {ms} ms ({}); write `{}` to be explicit (a `{{{{ }}}}` \
+                                     param substitutes as milliseconds too)",
+                                    i + 1,
+                                    schedule::show_ms(ms),
+                                    schedule::show_ms(ms),
+                                ));
+                            }
                         }
                     }
                 }
