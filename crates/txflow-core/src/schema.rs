@@ -20,7 +20,11 @@ pub const REF: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$
 /// pattern's namespace, and an asset name of 1 to 32 letters, digits, `_` or `-`.
 pub const ASSET: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*\\.[A-Za-z0-9_-]{1,32}$";
 /// A time offset: `0ms`, `250ms`, `2s`.
-pub const DURATION: &str = "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$";
+pub const DURATION: &str = "^(0|[0-9]+(ms|s|m|h))$";
+/// Schedule offsets may additionally be a bare number of milliseconds or a
+/// `{{ param }}` (which substitutes as milliseconds): three spellings that
+/// `observe_for` does not share, because no code parses that field from a spec.
+pub const OFFSET: &str = "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$";
 /// An argument written as a number in a string, or as `{{ expression }}`.
 const ARG_TEXT: &str = "^\\s*([0-9]+|\\{\\{[^{}]*\\}\\})\\s*$";
 
@@ -393,7 +397,7 @@ fn schedule_schema() -> Value {
                         },
                         "at": {
                             "oneOf": [
-                                { "type": "string", "pattern": DURATION },
+                                { "type": "string", "pattern": OFFSET },
                                 { "type": "integer", "minimum": 0 }
                             ],
                             "default": "0ms",
@@ -405,7 +409,7 @@ fn schedule_schema() -> Value {
                         },
                         "spacing": {
                             "oneOf": [
-                                { "type": "string", "pattern": DURATION },
+                                { "type": "string", "pattern": OFFSET },
                                 { "type": "integer", "minimum": 0 }
                             ],
                             "default": "0ms",
@@ -414,7 +418,7 @@ fn schedule_schema() -> Value {
                         },
                         "every": {
                             "oneOf": [
-                                { "type": "string", "pattern": DURATION },
+                                { "type": "string", "pattern": OFFSET },
                                 { "type": "integer", "minimum": 1 }
                             ],
                             "description": "Repeat the release this often; each wave re-sends \
@@ -423,7 +427,7 @@ fn schedule_schema() -> Value {
                         },
                         "until": {
                             "oneOf": [
-                                { "type": "string", "pattern": DURATION },
+                                { "type": "string", "pattern": OFFSET },
                                 { "type": "integer", "minimum": 0 }
                             ],
                             "description": "A wave of a repeating release starts only before \

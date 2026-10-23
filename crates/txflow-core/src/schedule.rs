@@ -33,6 +33,7 @@ pub struct Schedule {
 /// integer as milliseconds — the whole offset), or a bare integer (milliseconds,
 /// which `check` warns about because `2` for 2 ms is easily misread).
 #[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
 pub enum Offset {
     /// A bare integer, counted in milliseconds.
     Ms(u64),
