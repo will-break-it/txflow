@@ -299,7 +299,8 @@ names.
   selection a target node, a transport and a release offset; a release MAY repeat
   (`every`, with `until`), re-sending its selection from the top each wave and re-counting
   `release-tip` windows from the tip before each wave, and the schedule MUST reject
-  `every` and `until` that do not pair or that never fire.
+  `every` and `until` that do not pair or that never fire. Release offsets take `ms`, `s`,
+  `m` or `h` units, or a bare integer of milliseconds, so a param can scale an offset.
 - **FR-018**: Replay MUST support N2N TxSubmission (via the net-rs stack in `leios-tools`),
   including holding open connections to several targets and releasing to them at the
   same instant.
@@ -314,6 +315,9 @@ names.
   with additional causes when more than one applies.
 - **FR-022**: `fund` and `replay` MUST refuse to run if the era or protocol-parameter hash
   in a fresh chain-context file differs from the manifest's.
+- **FR-023**: A spec MAY carry `expect` (expected outcomes). `check` and `materialise`
+  MUST carry it through untouched; comparing a rerun's outcomes against it is future
+  work (User Story 3), so an interpreter never rejects a spec for its `expect`.
 
 **Results and reruns**
 
@@ -390,6 +394,8 @@ names.
 
 - **Experiment spec**: what a person writes or the importer produces. Parameters,
   wallets, pattern instances, explicit transactions, schedule, expectations, seed.
+  `expect` carries the expectations through materialise and replay unchanged; no
+  run interprets them yet (see FR-023).
 - **Pattern**: a named, parameterised generator of an IR fragment.
 - **Graph IR**: sources, validators, policies, transactions (inputs, reference inputs,
   collateral, mint, outputs, labels, optional template), and derived relations (conflict
