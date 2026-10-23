@@ -28,6 +28,27 @@ pub struct Schedule {
     pub options: Option<Options>,
 }
 
+/// A release offset: `200ms`, `2s`, `1m`, or a bare number of milliseconds
+/// (so a param can scale it: `at: "{{ lag }}"` with `lag: 4500`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum Offset {
+    /// A bare integer, counted in milliseconds (params reach schedule offsets
+    /// this way — durations in a spec text are strings with units).
+    Ms(u64),
+    /// `0ms`, `200ms`, `2s`, `1m` or `1h`.
+    Text(String),
+}
+
+impl Offset {
+    pub fn text(&self) -> String {
+        match self {
+            Offset::Ms(ms) => ms.to_string(),
+            Offset::Text(text) => text.clone(),
+        }
+    }
+}
+
 /// Send the selected transactions to one target.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -39,18 +60,18 @@ pub struct Release {
     pub via: Via,
     /// Offset from the start of the run, e.g. `0ms`, `200ms`, `2s`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<String>,
+    pub at: Option<Offset>,
     /// Gap between consecutive selected transactions, in dependency order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spacing: Option<String>,
+    pub spacing: Option<Offset>,
     /// Repeat the release this often, re-counting `release-tip` windows from
     /// the tip before each fire. Needs `until`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub every: Option<String>,
+    pub every: Option<Offset>,
     /// Last offset a repeating release fires at; a wave starts only before it.
     /// Needs `every`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub until: Option<String>,
+    pub until: Option<Offset>,
 }
 
 /// Which transactions a release sends. Exactly one field is set.
@@ -147,15 +168,15 @@ pub fn plan(
     for (i, release) in schedule.releases.iter().enumerate() {
         let at = |e: String| Error::Spec(format!("schedule release {}: {e}", i + 1));
         let target = check_target(release, schedule, network).map_err(at)?;
-        let start = duration(release.at.as_deref().unwrap_or("0ms")).map_err(at)?;
-        let spacing = duration(release.spacing.as_deref().unwrap_or("0ms")).map_err(at)?;
+        let start = duration(&release.at.as_ref().map(Offset::text).unwrap_or_else(|| "0ms".to_string())).map_err(at)?;
+        let spacing = duration(&release.spacing.as_ref().map(Offset::text).unwrap_or_else(|| "0ms".to_string())).map_err(at)?;
         let every = match &release.every {
             None => 0,
-            Some(e) => duration(e).map_err(at)?,
+            Some(e) => duration(&e.text()).map_err(at)?,
         };
         let until = match &release.until {
             None => None,
-            Some(u) => Some(duration(u).map_err(at)?),
+            Some(u) => Some(duration(&u.text()).map_err(at)?),
         };
         if every == 0 && until.is_some() {
             return Err(at("`until` needs `every`".to_string()));
@@ -437,18 +458,21 @@ fn in_pattern(tx: &str, id: &str, counted: bool) -> bool {
     }
 }
 
-/// `250ms`, `2s` or `0` as milliseconds.
+/// `250ms`, `2s`, `1m`, `1h` or `0` as milliseconds. A bare integer is
+/// milliseconds, so a param can scale an offset: `every: "{{ wave }}"`.
 pub fn duration(text: &str) -> std::result::Result<u64, String> {
     let text = text.trim();
-    let bad = || format!("`{text}` is not a duration; write e.g. `0ms`, `200ms` or `2s`");
+    let bad = || format!("`{text}` is not a duration; write e.g. `0ms`, `200ms`, `45s` or `1m`");
     let (number, scale) = if let Some(n) = text.strip_suffix("ms") {
         (n, 1)
     } else if let Some(n) = text.strip_suffix('s') {
         (n, 1000)
-    } else if text == "0" {
-        ("0", 1)
+    } else if let Some(n) = text.strip_suffix('m') {
+        (n, 60_000)
+    } else if let Some(n) = text.strip_suffix('h') {
+        (n, 3_600_000)
     } else {
-        return Err(bad());
+        (text, 1)
     };
     let number: u64 = number.trim().parse().map_err(|_| bad())?;
     number
@@ -458,7 +482,11 @@ pub fn duration(text: &str) -> std::result::Result<u64, String> {
 }
 
 pub(crate) fn show_ms(ms: u64) -> String {
-    if ms > 0 && ms.is_multiple_of(1000) {
+    if ms > 0 && ms.is_multiple_of(3_600_000) {
+        format!("{}h", ms / 3_600_000)
+    } else if ms > 0 && ms.is_multiple_of(60_000) {
+        format!("{}m", ms / 60_000)
+    } else if ms > 0 && ms.is_multiple_of(1000) {
         format!("{}s", ms / 1000)
     } else {
         format!("{ms}ms")

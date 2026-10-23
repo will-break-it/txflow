@@ -140,7 +140,7 @@ fn durations_are_bounded() {
     let report = run("  releases:\n    - { select: { pattern: ds }, target: europe, at: 2h }\n");
     assert!(!report.ok);
     assert!(
-        report.errors[0].contains("not a duration"),
+        report.errors[0].contains("longer than one hour"),
         "{:?}",
         report.errors
     );
@@ -354,4 +354,27 @@ fn repetition_needs_both_bounds_and_a_future_until() {
             report.errors
         );
     }
+}
+
+#[test]
+fn offsets_take_units_and_bare_milliseconds() {
+    use txflow_core::schedule::duration;
+    assert_eq!(duration("1m").unwrap(), 60_000);
+    assert_eq!(duration("1h").unwrap(), 3_600_000);
+    assert_eq!(duration("45s").unwrap(), 45_000);
+    assert_eq!(duration("20000").unwrap(), 20_000);
+    assert!(duration("bogus").is_err());
+    let report = run("  releases:\n    - { select: { names: [ds/x1] }, target: europe, at: 20000, spacing: 500, every: 5000, until: 90s }\n");
+    assert!(report.ok, "{:?}", report.errors);
+    let at: Vec<u64> = report
+        .plan
+        .expect("plan")
+        .sends
+        .iter()
+        .map(|s| s.at_ms)
+        .collect();
+    // Waves start at 20000, 25000, … every 5000 until 90000, one send each.
+    assert_eq!(at.len(), (90000 - 20000) / 5000);
+    assert_eq!(at[0], 20000);
+    assert_eq!(at[1], 25000);
 }

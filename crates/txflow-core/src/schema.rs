@@ -20,7 +20,7 @@ pub const REF: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$
 /// pattern's namespace, and an asset name of 1 to 32 letters, digits, `_` or `-`.
 pub const ASSET: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*\\.[A-Za-z0-9_-]{1,32}$";
 /// A time offset: `0ms`, `250ms`, `2s`.
-pub const DURATION: &str = "^(0|[0-9]+(ms|s))$";
+pub const DURATION: &str = "^(0|[0-9]+(ms|s|m|h))$";
 /// An argument written as a number in a string, or as `{{ expression }}`.
 const ARG_TEXT: &str = "^\\s*([0-9]+|\\{\\{[^{}]*\\}\\})\\s*$";
 
@@ -64,7 +64,9 @@ pub fn schema() -> Value {
             "params": {
                 "type": "object",
                 "description": "Named integers that arguments can use as `{{ name }}`, so one \
-                    number scales the experiment.",
+                    number scales the experiment. Schedule offsets take a bare integer as \
+                    milliseconds (`every: \"{{ wave }}\"` with `wave: 20000`), before any \
+                    unit they sit next to.",
                 "propertyNames": { "pattern": NAME },
                 "additionalProperties": { "type": "integer" }
             },
@@ -125,7 +127,10 @@ pub fn schema() -> Value {
             },
             "schedule": { "$ref": "#/$defs/schedule" },
             "expect": {
-                "description": "Expected outcomes. Carried, not yet interpreted."
+                "description": "Expected outcomes, carried so a rerun against a new node build \
+                    can flag surprises once an interpreter reads them. Not yet interpreted: \
+                    any shape is accepted, and `check` does not judge it. A drafted shape: \
+                    `{ settle: { by_slot: 40, on_relays: 3 }, probes: { within_ms: 2000 } }`."
             }
         },
         "$defs": defs()
@@ -386,28 +391,38 @@ fn schedule_schema() -> Value {
                                 peer would, with no answer beyond the peer asking for it."
                         },
                         "at": {
-                            "type": "string",
-                            "pattern": DURATION,
+                            "oneOf": [
+                                { "type": "string", "pattern": DURATION },
+                                { "type": "integer", "minimum": 0 }
+                            ],
                             "default": "0ms",
-                            "description": "Offset from the start of the run."
+                            "description": "Offset from the start of the run: `200ms`, `2s`, \
+                                `1m` or a bare number of milliseconds, so a param can scale it \
+                                (`at: \"{{ lag }}\"` with `lag` an integer)."
                         },
                         "spacing": {
-                            "type": "string",
-                            "pattern": DURATION,
+                            "oneOf": [
+                                { "type": "string", "pattern": DURATION },
+                                { "type": "integer", "minimum": 0 }
+                            ],
                             "default": "0ms",
                             "description": "Gap between consecutive selected transactions, in \
                                 dependency order."
                         },
                         "every": {
-                            "type": "string",
-                            "pattern": DURATION,
+                            "oneOf": [
+                                { "type": "string", "pattern": DURATION },
+                                { "type": "integer", "minimum": 1 }
+                            ],
                             "description": "Repeat the release this often; each wave re-sends \
                                 the selection from the top, and `release-tip` windows re-count \
                                 from the tip before each wave. Needs `until`."
                         },
                         "until": {
-                            "type": "string",
-                            "pattern": DURATION,
+                            "oneOf": [
+                                { "type": "string", "pattern": DURATION },
+                                { "type": "integer", "minimum": 0 }
+                            ],
                             "description": "A wave of a repeating release starts only before \
                                 this offset from the start of the run. Needs `every`."
                         }
@@ -564,10 +579,11 @@ fn validity_defs(defs: &mut Map<String, Value>) {
                 "description": "What `from` and `until` count from: `start`, the slot the \
                     schedule starts in (`at: 0ms`); `tip`, the slot of the tip block then; \
                     or `release-tip`, the slot of the tip block when the release that sends \
-                    the tx fires (a repeated release re-reads it each wave). A node checks a \
-                    tx against the slot after its tip, which trails the clock by the time \
-                    since the last block, so `tip` and `release-tip` are what edges near 0 \
-                    mean to a node."
+                    the tx fires (a repeated release re-reads it each wave; runs that need \
+                    the tip are replay-time only, and `materialise` refuses them offline). \
+                    A node checks a tx against the slot after its tip, which trails the \
+                    clock by the time since the last block, so `tip` and `release-tip` are \
+                    what edges near 0 mean to a node."
             }
         })
     };
