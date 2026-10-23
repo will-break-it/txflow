@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::expr;
 use crate::ir::Ir;
 use crate::network::Network;
 use crate::spec::ExperimentSpec;
@@ -28,15 +29,14 @@ pub struct Schedule {
     pub options: Option<Options>,
 }
 
-/// A release offset: `200ms`, `2s`, `1m`, or a bare number of milliseconds
-/// (so a param can scale it: `at: "{{ lag }}"` with `lag: 4500`).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(untagged)]
+/// A release offset: `200ms`, `2s`, `1m`, `1h`, `{{ param }}` (the param's
+/// integer as milliseconds — the whole offset), or a bare integer (milliseconds,
+/// which `check` warns about because `2` for 2 ms is easily misread).
+#[derive(Serialize, Clone, Debug, PartialEq)]
 pub enum Offset {
-    /// A bare integer, counted in milliseconds (params reach schedule offsets
-    /// this way — durations in a spec text are strings with units).
+    /// A bare integer, counted in milliseconds.
     Ms(u64),
-    /// `0ms`, `200ms`, `2s`, `1m` or `1h`.
+    /// `0ms`, `200ms`, `2s`, `1m`, `1h`, a bare number, or `{{ param }}`.
     Text(String),
 }
 
@@ -45,6 +45,28 @@ impl Offset {
         match self {
             Offset::Ms(ms) => ms.to_string(),
             Offset::Text(text) => text.clone(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Offset {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::Number(n) => n.as_u64().map(Offset::Ms).ok_or_else(|| {
+                D::Error::custom(format!(
+                    "`{n}` is not an offset: write `0ms`, `200ms`, `2s` or `1m`, \
+                         or leave it to a param (`{{{{ lag }}}}`)"
+                ))
+            }),
+            serde_yaml::Value::String(text) => Ok(Offset::Text(text)),
+            other => Err(D::Error::custom(format!(
+                "an offset is text with a unit or a non-negative integer, got {other:?}"
+            ))),
         }
     }
 }
@@ -168,15 +190,52 @@ pub fn plan(
     for (i, release) in schedule.releases.iter().enumerate() {
         let at = |e: String| Error::Spec(format!("schedule release {}: {e}", i + 1));
         let target = check_target(release, schedule, network).map_err(at)?;
-        let start = duration(&release.at.as_ref().map(Offset::text).unwrap_or_else(|| "0ms".to_string())).map_err(at)?;
-        let spacing = duration(&release.spacing.as_ref().map(Offset::text).unwrap_or_else(|| "0ms".to_string())).map_err(at)?;
+        // A template must be the whole offset; substitution yields milliseconds.
+        let ms_of = |offset: &Offset, field: &str| -> Result<u64> {
+            match offset {
+                Offset::Ms(ms) => Ok(*ms),
+                Offset::Text(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.contains("{{") {
+                        if !(trimmed.starts_with("{{") && trimmed.ends_with("}}")) {
+                            return Err(at(format!(
+                                "`{field}` is `{text}`: a `{{{{ param }}}}` must be the whole \
+                                 offset — it is already milliseconds, so no unit may sit \
+                                 next to it"
+                            )));
+                        }
+                        expr::eval(
+                            &serde_yaml::Value::String(trimmed.to_string()),
+                            &spec.params,
+                        )
+                        .map_err(|e| at(e.to_string()))
+                    } else {
+                        duration(trimmed).map_err(at)
+                    }
+                }
+            }
+        };
+        let start = ms_of(
+            release
+                .at
+                .as_ref()
+                .unwrap_or(&Offset::Text("0ms".to_string())),
+            "at",
+        )?;
+        let spacing = ms_of(
+            release
+                .spacing
+                .as_ref()
+                .unwrap_or(&Offset::Text("0ms".to_string())),
+            "spacing",
+        )?;
         let every = match &release.every {
             None => 0,
-            Some(e) => duration(&e.text()).map_err(at)?,
+            Some(e) => ms_of(e, "every")?,
         };
         let until = match &release.until {
             None => None,
-            Some(u) => Some(duration(&u.text()).map_err(at)?),
+            Some(u) => Some(ms_of(u, "until")?),
         };
         if every == 0 && until.is_some() {
             return Err(at("`until` needs `every`".to_string()));

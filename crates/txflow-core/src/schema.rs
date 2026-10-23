@@ -20,7 +20,7 @@ pub const REF: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*(\\.(0|[1-9][0-9]*))?$
 /// pattern's namespace, and an asset name of 1 to 32 letters, digits, `_` or `-`.
 pub const ASSET: &str = "^[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*\\.[A-Za-z0-9_-]{1,32}$";
 /// A time offset: `0ms`, `250ms`, `2s`.
-pub const DURATION: &str = "^(0|[0-9]+(ms|s|m|h))$";
+pub const DURATION: &str = "^(0|[0-9]+(ms|s|m|h)|[0-9]+|\\{\\{[^{}]*\\}\\})$";
 /// An argument written as a number in a string, or as `{{ expression }}`.
 const ARG_TEXT: &str = "^\\s*([0-9]+|\\{\\{[^{}]*\\}\\})\\s*$";
 
@@ -64,9 +64,9 @@ pub fn schema() -> Value {
             "params": {
                 "type": "object",
                 "description": "Named integers that arguments can use as `{{ name }}`, so one \
-                    number scales the experiment. Schedule offsets take a bare integer as \
-                    milliseconds (`every: \"{{ wave }}\"` with `wave: 20000`), before any \
-                    unit they sit next to.",
+                    number scales the experiment. Inside a schedule offset a `{{ name }}` \
+                    must be the whole offset and substitutes as that many milliseconds; \
+                    it cannot take a unit alongside.",
                 "propertyNames": { "pattern": NAME },
                 "additionalProperties": { "type": "integer" }
             },
@@ -127,10 +127,11 @@ pub fn schema() -> Value {
             },
             "schedule": { "$ref": "#/$defs/schedule" },
             "expect": {
-                "description": "Expected outcomes, carried so a rerun against a new node build \
-                    can flag surprises once an interpreter reads them. Not yet interpreted: \
-                    any shape is accepted, and `check` does not judge it. A drafted shape: \
-                    `{ settle: { by_slot: 40, on_relays: 3 }, probes: { within_ms: 2000 } }`."
+                "description": "Expected outcomes, carried so a rerun against a new node \
+                    build can flag surprises once an interpreter reads them. No step \
+                    interprets or is required to preserve them yet. `check` accepts any \
+                    shape — `examples/conflicting-chains.yaml` uses a list, e.g. \
+                    `expect: [{ id: one_per_conflict, each_conflict_set: { on_chain: exactly_one } }]`."
             }
         },
         "$defs": defs()
@@ -403,9 +404,11 @@ fn schedule_schema() -> Value {
                                 { "type": "integer", "minimum": 0 }
                             ],
                             "default": "0ms",
-                            "description": "Offset from the start of the run: `200ms`, `2s`, \
-                                `1m` or a bare number of milliseconds, so a param can scale it \
-                                (`at: \"{{ lag }}\"` with `lag` an integer)."
+                            "description": "Offset from the start of the run: `200ms`, `2s`, `1m`, `1h`, \
+                                a bare number of milliseconds, or `{{ param }}` alone (its \
+                                integer substitutes as milliseconds; no unit may sit next to \
+                                it). `check` warns on bare integers, which are easy to \
+                                misread."
                         },
                         "spacing": {
                             "oneOf": [
@@ -586,8 +589,9 @@ fn validity_defs(defs: &mut Map<String, Value>) {
                 "description": "What `from` and `until` count from: `start`, the slot the \
                     schedule starts in (`at: 0ms`); `tip`, the slot of the tip block then; \
                     or `release-tip`, the slot of the tip block when the release that sends \
-                    the tx fires (a repeated release re-reads it each wave; runs that need \
-                    the tip are replay-time only, and `materialise` refuses them offline). \
+                    the tx fires (a repeated release re-reads it each wave). Only \
+                    `release-tip` needs the tip at release time, so `materialise` — which \
+                    knows no tip — refuses this anchor; `start` and `tip` materialise fine. \
                     A node checks a tx against the slot after its tip, which trails the \
                     clock by the time since the last block, so `tip` and `release-tip` are \
                     what edges near 0 mean to a node."

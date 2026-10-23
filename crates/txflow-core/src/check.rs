@@ -76,6 +76,25 @@ pub fn check_within(text: &str, limits: &Limits, network: Option<&Network>) -> R
             let mut warnings = vec![];
             if let Some(schedule) = &spec.schedule {
                 warnings.extend(schedule::renamed(schedule, network));
+                for (i, release) in schedule.releases.iter().enumerate() {
+                    for (field, value) in [
+                        ("at", &release.at),
+                        ("spacing", &release.spacing),
+                        ("every", &release.every),
+                        ("until", &release.until),
+                    ] {
+                        if let Some(schedule::Offset::Ms(ms)) = value {
+                            warnings.push(format!(
+                                "schedule release {} `{field}` is a bare integer: it reads \
+                                 as {ms} ms ({}); write `{}` to be explicit (a `{{{{ }}}}` \
+                                 param substitutes as milliseconds too)",
+                                i + 1,
+                                schedule::show_ms(*ms),
+                                schedule::show_ms(*ms),
+                            ));
+                        }
+                    }
+                }
             }
             if let Some(plan) = &plan {
                 if !plan.unreleased.is_empty() {
