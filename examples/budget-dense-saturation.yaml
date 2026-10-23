@@ -1,0 +1,55 @@
+# Execution-budget saturation and refill, honestly (X26-honest companion).
+#
+# `dense` is `fill` byte-light, execution-heavy transactions: each carries
+# `dose`% of the network's per-transaction execution budget (cpu and
+# memory) in a run of txflow's burner script, so it costs the mempool's
+# execution dimension far more than its byte dimension.
+#
+# The release repeats every 20 s for 120 s, re-sending the selection from
+# the top each time. That is the refill flurry: after a block carries the
+# txs away (or their short release-tip validity expires), the same txs
+# race back in. `probes` are ordinary labelled payments at an even pace —
+# whether they are admitted, and how long they wait while the execution
+# dimension is saturated, is the observation. No conflicts, no adversary.
+#
+# For per-wave freshness use `validity: { until: 30, anchor: release-tip }`
+# on `dense` (a window that re-counts from the tip before each wave); note
+# that `materialise` refuses release-tip windows offline by design, so such
+# runs use fund/replay with a live chain context instead.
+#
+# Materialise with the Plutus context (comment at the top of each example):
+#   txflow materialise examples/budget-dense-saturation.yaml \
+#     --context examples/demo-plutus-context.yaml
+version: 0
+experiment: budget-dense-saturation
+seed: 7
+params:
+  dose: 90
+  fill: 20
+  probes: 12
+wallets:
+  alice: {}
+patterns:
+  - id: dense
+    use: chain
+    with: { length: "{{ fill }}" }
+    color: d9480f
+    cost:
+      cpu: "{{ dose }}%"
+      mem: "{{ dose }}%"
+  - id: probes
+    use: chain
+    with: { length: "{{ probes }}" }
+    color: 2f9e44
+schedule:
+  releases:
+    - select: { pattern: dense }
+      target: frankfurt
+      at: 0ms
+      spacing: 100ms
+      every: 20s
+      until: 120s
+    - select: { pattern: probes }
+      target: frankfurt
+      at: 0ms
+      spacing: 1s
