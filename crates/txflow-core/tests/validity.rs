@@ -121,7 +121,8 @@ fn windows_that_cannot_hold_a_tx_are_errors() {
     let unknown = ExperimentSpec::from_yaml(&pattern("{ until: 3, anchor: now }"))
         .expect_err("unknown anchor")
         .to_string();
-    assert!(unknown.contains("expected `start` or `tip`"), "{unknown}");
+    assert!(unknown.contains("`start`"), "{unknown}");
+    assert!(unknown.contains("`release-tip`"), "{unknown}");
     let spec = format!(
         "{HEAD}validity: {{ until: 3, select: {{ label: x }} }}\npatterns:\n  - {{ id: c, use: chain }}\n"
     );
@@ -285,4 +286,43 @@ fn the_summary_names_the_first_to_expire_per_anchor() {
         ),
         "{summary}"
     );
+}
+
+#[test]
+fn a_release_tip_window_parses() {
+    let text = format!(
+        "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+         t: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change }}], \
+         validity: {{ until: 2, anchor: release-tip }} }}\n"
+    );
+    assert_eq!(
+        window(&ir(&text), "t"),
+        Some(Validity {
+            from: None,
+            until: Some(2),
+            anchor: Anchor::ReleaseTip
+        })
+    );
+}
+
+#[test]
+fn a_release_tip_window_that_closes_by_the_checked_slot_never_lands() {
+    // `until: 1` after the tip at release: a node checks a new tx against the
+    // slot after its tip, so the window is already past when it is admitted.
+    let text = format!(
+        "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+         t: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change }}], \
+         validity: {{ until: 1, anchor: release-tip }} }}\n"
+    );
+    assert!(warnings(&text)
+        .iter()
+        .any(|w| w.contains("`t` can never land")));
+    let ok = format!(
+        "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+         t: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change }}], \
+         validity: {{ until: 2, anchor: release-tip }} }}\n"
+    );
+    assert!(warnings(&ok)
+        .iter()
+        .all(|w| !w.contains("`t` can never land")));
 }

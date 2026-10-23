@@ -199,7 +199,12 @@ and `until` must be after `from`. `anchor` is what they count from:
 
 - `start` (the default): the slot the schedule starts in, `at: 0ms`, so a window and a
   release offset share one clock (on Musashi a slot is one second);
-- `tip`: the slot of the tip block when the schedule starts.
+- `tip`: the slot of the tip block when the schedule starts;
+- `release-tip`: the slot of the tip block when the release that sends the tx fires. A
+  repeated release re-reads the tip before each wave, so a window can hug the advancing
+  chain from wave to wave instead of going stale against the run's start tip. The run
+  only learns this tip when it fires each release, so materialise cannot fix a
+  `release-tip` window offline: it refuses the tx and points at `anchor: tip`.
 
 A node checks a transaction against the slot after its tip, both when it takes it into
 its mempool and when it revalidates its mempool after a new block, not against the clock.
@@ -488,6 +493,8 @@ schedule:
       via: n2n                        # n2n | n2c
       at: 0ms                         # offset from replay start
       spacing: 0ms                    # between consecutive selected txs, in topo order
+      every: 25s                      # optional: repeat, re-counting `release-tip` windows
+      until: 5m                       #   each wave; needs `every`, and a wave starts before it
     - select: { label: side-b }
       target: tokyo
       via: n2n
@@ -499,7 +506,11 @@ schedule:
     observe_for: 120s                     # how long to watch for on-chain inclusion
 ```
 
-`at` and `spacing` are `0`, `<n>ms` or `<n>s`, at most one hour. Relays come from the
+`at` and `spacing` are `0`, `<n>ms` or `<n>s`, at most one hour. `every` repeats a
+release: each wave re-sends the selection from the top (in topological order, spaced as
+before), and a `release-tip` window re-counts from the tip the replayer refreshes before
+that wave. `until` is the last offset a wave may start at; a wave starts only before it.
+`every` and `until` come together, and `until` must be after `at`. Relays come from the
 network file (`networks/<id>.json`: id, label, `host:port`, accepted `via`); `txflow check
 --network` and the page reject a release whose target is neither a relay nor in `targets`,
 or whose `via` the relay does not accept. A transaction matched by several releases is submitted by each. A transaction matched by

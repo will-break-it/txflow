@@ -296,7 +296,10 @@ names.
 - **FR-016**: A separate `fund` step MUST submit the funding transactions and wait until
   they are observed on chain; replay MUST refuse to start until funding is confirmed.
 - **FR-017**: The schedule MUST select transactions by name or label and assign each
-  selection a target node, a transport and a release offset.
+  selection a target node, a transport and a release offset; a release MAY repeat
+  (`every`, with `until`), re-sending its selection from the top each wave and re-counting
+  `release-tip` windows from the tip before each wave, and the schedule MUST reject
+  `every` and `until` that do not pair or that never fire.
 - **FR-018**: Replay MUST support N2N TxSubmission (via the net-rs stack in `leios-tools`),
   including holding open connections to several targets and releasing to them at the
   same instant.
@@ -351,12 +354,15 @@ names.
 **Validity windows**
 
 - **FR-031**: A spec MUST be able to give transactions a validity window (`validity`:
-  `from` and/or `until` in slots, counted from the run's start or from its tip then) on
+  `from` and/or `until` in slots, counted from the run's start, from its tip then, or
+  from the tip when the release that carries it fires) on
   the spec, a pattern instance or a transaction, and on the spec and pattern instances
   shift it per generation (`step`) and limit it to txs by label or generation (`select`).
   Materialise MUST write it as the transaction's validity interval against the start and
   tip slots in the chain context, MUST fail naming the transaction when the context lacks
-  the slot a window counts from, and MUST build the same funding transactions and run id
+  the slot a window counts from, MUST refuse a window counted from the tip at release
+  (which the run only learns when it fires each release) and MUST build the same funding
+  transactions and run id
   whatever those slots are, so a run can build its experiment transactions when it knows
   when it starts (data model §2).
 

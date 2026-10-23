@@ -45,7 +45,7 @@ use crate::ir::{Amount, AmountKeyword, Ir, Tx};
 use crate::metadata::{auxiliary_data, Metadata};
 use txflow_core::assets::Mint;
 use txflow_core::cost::Cost;
-use txflow_core::validity::Validity;
+use txflow_core::validity::{Anchor, Validity};
 
 /// CIP-20 transaction message label, used to attribute txs on chain.
 pub const METADATA_LABEL: u64 = txflow_core::metadata::MESSAGE_LABEL;
@@ -478,12 +478,18 @@ pub fn materialise(
         };
         let (invalid_before, invalid_hereafter) = validity
             .absolute(context.slots.start, context.slots.tip)
-            .ok_or_else(|| {
-                Error::Context(format!(
+            .ok_or_else(|| match validity.anchor {
+                Anchor::ReleaseTip => Error::Materialise(format!(
+                    "tx `{name}`: its validity window counts from the tip at release \
+                     (`anchor: release-tip`), which the run does not know until it fires \
+                     each release wave; use `anchor: tip` to fix the window from the run's \
+                     start tip"
+                )),
+                anchor => Error::Context(format!(
                     "tx `{name}`: its validity window counts from the run's {anchor}, so \
                      the context needs `slots.{anchor}`",
-                    anchor = validity.anchor.as_str()
-                ))
+                    anchor = anchor.as_str()
+                )),
             })?;
         window_of.insert(
             name,
