@@ -1,0 +1,28 @@
+# Execution-budget saturation with a dependent chain (X26-honest, Phase B).
+#
+# The dependency treatment: one 90%-cpu/mem chain, released once. A child is
+# admitted only after its parent settles, so this measures settlement latency
+# under budget pressure rather than saturation — the contrast to
+# saturation-independent.yaml.
+version: 0
+experiment: chain-gated
+seed: 7
+params:
+  dose: 90
+  length: 6
+wallets:
+  alice: {}
+patterns:
+  - id: ladder
+    use: chain
+    with: { length: "{{ length }}" }
+    color: 1971c2
+    cost:
+      cpu: "{{ dose }}%"
+      mem: "{{ dose }}%"
+schedule:
+  releases:
+    - select: { pattern: ladder }
+      target: frankfurt
+      at: 0ms
+      spacing: 500ms

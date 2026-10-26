@@ -1,0 +1,45 @@
+# Execution-budget saturation with independent transactions (X26-honest, Phase A).
+#
+# `dense` is a fan_out: one budget-dense root (must land first), then `fill`
+# independent 90%-cpu/mem children. No chain — every child is admissible the
+# moment the root is on-chain, and later waves re-fill the budget dimension
+# after blocks drain it. `probes` is the same shape at zero script cost, as
+# the honest baseline. Wave timings: dense every 30s for 300s, probes every
+# 40s for 300s.
+#
+#   txflow materialise examples/saturation-independent.yaml \
+#     --context <your musashi context>
+version: 0
+experiment: saturation-independent
+seed: 7
+params:
+  dose: 90
+  fill: 8
+wallets:
+  alice: {}
+patterns:
+  - id: dense
+    use: fan_out
+    with: { width: "{{ fill }}" }
+    color: d9480f
+    cost:
+      cpu: "{{ dose }}%"
+      mem: "{{ dose }}%"
+  - id: probes
+    use: fan_out
+    with: { width: "{{ fill }}" }
+    color: 2f9e44
+schedule:
+  releases:
+    - select: { pattern: dense }
+      target: frankfurt
+      at: 0ms
+      spacing: 250ms
+      every: 30s
+      until: 300s
+    - select: { pattern: probes }
+      target: frankfurt
+      at: 5s
+      spacing: 2s
+      every: 40s
+      until: 300s
