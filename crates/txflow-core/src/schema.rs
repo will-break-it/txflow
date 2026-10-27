@@ -319,6 +319,13 @@ fn defs() -> Value {
                         Not on the `change` output, which takes every token left.",
                     "propertyNames": { "pattern": ASSET },
                     "additionalProperties": { "type": "integer", "minimum": 1 }
+                },
+                "pad_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Inflate this transaction to at least this many bytes, \
+                        by padding its auxiliary data. At most one output of a transaction \
+                        may carry it. The result must stay under the network's maxTxSize."
                 }
             }
         }),

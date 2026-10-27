@@ -598,7 +598,7 @@ pub fn materialise(
             &carry,
             &[],
             &planned,
-            &metadata(&context.origin, &ir_prefix, &run_id, index, None),
+            &metadata(&context.origin, &ir_prefix, &run_id, index, None, 0),
             &funding_key,
             pp,
             format,
@@ -675,6 +675,19 @@ pub fn materialise(
                 assets: held,
             });
         }
+        let pad: Option<u32> = {
+            let mut pads = tx.outputs.iter().filter_map(|o| o.pad_bytes);
+            let first = pads.next();
+            if pads.next().is_some() {
+                return Err(in_tx(
+                    name,
+                    Error::Materialise(
+                        "`pad_bytes` may be set on at most one output of a transaction".to_string(),
+                    ),
+                ));
+            }
+            first
+        };
         let mint = policies.minting(&tx.mint).map_err(|e| in_tx(name, e))?;
         let mut input_refs = tx.inputs.clone();
         let run = match (plan_of.get(name), &setup) {
@@ -708,7 +721,7 @@ pub fn materialise(
             &inputs,
             &refs,
             &planned,
-            &metadata(&context.origin, &ir_prefix, &run_id, index, Some(tx)),
+            &metadata(&context.origin, &ir_prefix, &run_id, index, Some(tx), 0),
             &run_key,
             pp,
             format,
@@ -717,6 +730,46 @@ pub fn materialise(
             mint.as_ref(),
         )
         .map_err(|e| in_tx(name, e))?;
+        // `pad_bytes` names a *total* size, only known once the fee has
+        // converged, so build once unpadded to learn the size, then again with
+        // enough padding to reach the target.
+        let built = match pad {
+            None => built,
+            Some(target) => {
+                let target = target as usize;
+                let base = built.bytes.len();
+                if base >= target {
+                    return Err(in_tx(
+                        name,
+                        Error::Materialise(format!(
+                            "`pad_bytes` target of {target} bytes is not larger than the \
+                             transaction's {base} bytes"
+                        )),
+                    ));
+                }
+                let chunks = (target - base).div_ceil(PAD_CHUNK_BYTES);
+                build_signed_with(
+                    &inputs,
+                    &refs,
+                    &planned,
+                    &metadata(
+                        &context.origin,
+                        &ir_prefix,
+                        &run_id,
+                        index,
+                        Some(tx),
+                        chunks,
+                    ),
+                    &run_key,
+                    pp,
+                    format,
+                    run.as_ref().map(|(_, _, run)| run),
+                    window_of.get(name).map(|(_, window)| window),
+                    mint.as_ref(),
+                )
+                .map_err(|e| in_tx(name, e))?
+            }
+        };
         if let Some(max) = max_value_size {
             for (i, (output, lovelace)) in planned.iter().zip(&built.outputs).enumerate() {
                 let size = assets::value_size(*lovelace, &output.assets)?;
@@ -1648,19 +1701,54 @@ fn manifest_tx(
     }
 }
 
+/// Label of the auxiliary-data entry `pad_bytes` uses, a list of 64-byte
+/// byte strings: the ledger caps any single metadata byte string at 64 bytes,
+/// so the padding is chunked.
+pub const PAD_LABEL: u64 = 1023;
+/// Byte strings in metadata are at most 64 bytes; CBOR adds a two-byte header
+/// to each, so a padding chunk of 64 zero bytes inflates the tx by 66.
+const PAD_CHUNK_BYTES: usize = 66;
+
 /// Shelley-format auxiliary data:
 /// `{674: {"msg": ["txflow/1 <origin>", "spec:<ir>", "run:<run>#<index>"]}}`,
-/// plus the tx's own metadata and colour tag from the spec, if any.
-/// The run id and index also keep the members of a conflict set distinct.
-fn metadata(origin: &str, ir_prefix: &str, run_id: &str, index: usize, tx: Option<&Tx>) -> Vec<u8> {
+/// plus the tx's own metadata and colour tag from the spec, if any, and, when
+/// `pad_chunks` is non-zero, a list of that many 64-byte byte strings under
+/// label 1023 as size padding. The run id and index also keep the members of
+/// a conflict set distinct.
+fn metadata(
+    origin: &str,
+    ir_prefix: &str,
+    run_id: &str,
+    index: usize,
+    tx: Option<&Tx>,
+    pad_chunks: usize,
+) -> Vec<u8> {
     let empty = Metadata::new();
+    let user = tx.map_or(&empty, |tx| &tx.metadata);
+    let padded;
+    let meta = if pad_chunks == 0 {
+        user
+    } else {
+        let zero = format!("0x{}", "00".repeat(64));
+        padded = {
+            let mut m = user.clone();
+            m.insert(
+                txflow_core::metadata::Label(PAD_LABEL),
+                serde_json::Value::Array(
+                    std::iter::repeat_n(serde_json::Value::String(zero), pad_chunks).collect(),
+                ),
+            );
+            m
+        };
+        &padded
+    };
     auxiliary_data(
         &[
             &watermark(origin),
             &format!("spec:{ir_prefix}"),
             &format!("run:{run_id}#{index}"),
         ],
-        tx.map_or(&empty, |tx| &tx.metadata),
+        meta,
         tx.and_then(|tx| tx.color.as_deref()),
     )
 }

@@ -448,6 +448,11 @@ pub(crate) fn validate(ir: &Ir) -> Result<()> {
                 "tx `{name}` must have exactly one `change` output, has {changes}"
             )));
         }
+        if tx.outputs.iter().filter(|o| o.pad_bytes.is_some()).count() > 1 {
+            return Err(Error::Graph(format!(
+                "tx `{name}`: `pad_bytes` may be set on at most one output"
+            )));
+        }
         if let Some(cost) = &tx.cost {
             cost.validate()
                 .map_err(|e| Error::Graph(format!("tx `{name}`: {e}")))?;

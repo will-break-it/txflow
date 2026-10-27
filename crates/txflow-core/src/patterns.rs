@@ -175,6 +175,7 @@ fn change_to(owner: &str) -> OutputSpec {
         to: owner.to_string(),
         lovelace: Amount::Keyword(AmountKeyword::Change),
         tokens: Tokens::new(),
+        pad_bytes: None,
     }
 }
 
@@ -183,6 +184,7 @@ fn min_to(owner: &str) -> OutputSpec {
         to: owner.to_string(),
         lovelace: Amount::Keyword(AmountKeyword::Min),
         tokens: Tokens::new(),
+        pad_bytes: None,
     }
 }
 
@@ -296,6 +298,7 @@ fn fan_out(args: &mut Args, owner: &str) -> Result<Fragment> {
             to: owner.to_string(),
             lovelace: Amount::Fixed(per_branch),
             tokens: Tokens::new(),
+            pad_bytes: None,
         });
     }
     root_outputs.push(change_to(owner));

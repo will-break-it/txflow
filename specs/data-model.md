@@ -51,7 +51,7 @@ txs:
         lovelace: <u64> | min | change # exactly one `change` per tx
         tokens: { <policy>.<asset>: <u64> }   # optional; not on the `change` output
         datum: { bytes: <u32> } | { inline: <cbor-hex> }   # optional
-        pad_bytes: <u32>               # optional, inflates tx to a target size
+        pad_bytes: <u32>               # optional, inflates the tx to at least this size
     template: { file: <path>.tx3, tx: <name>, args: { ... }, hash: <blake2b256> }  # optional (story 5)
     validity: { from: <slots>, until: <slots>, anchor: start | tip }  # optional, see below
     labels: [<string>, ...]
@@ -190,6 +190,15 @@ about 160 CPU steps per memory unit, and the burner spans about 240 (counting) t
 25,000 (hashing). Below the burner's floor, above the per-transaction limit, or at a
 ratio it cannot reach, materialise fails naming the transaction and saying what is
 reachable. A missing `cost` is left out of the canonical form.
+
+**Size.** An output may carry `pad_bytes`, which inflates its transaction to at
+least that many bytes by padding the auxiliary data (a list of 64-byte byte
+strings under label 1023, because the ledger caps any single metadata byte
+string at 64). At most one output of a transaction may carry it, and the target
+must exceed the transaction's natural size and stay under the network's
+`maxTxSize`. A transaction with no `cost` and a `pad_bytes` near `maxTxSize` is
+still a plain key spend — no script, no collateral — so it occupies a large
+share of the mempool's byte dimension at the ordinary min-fee per byte.
 
 **Validity windows.** `validity` says in which slots a transaction is valid, counted
 from an anchor rather than as absolute slots, so the spec means the same on every run.
