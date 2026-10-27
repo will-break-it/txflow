@@ -146,3 +146,29 @@ fn a_release_tip_window_is_not_fixed_offline() {
     assert!(error.contains("`anchor: release-tip`"), "{error}");
     assert!(error.contains("`anchor: tip`"), "{error}");
 }
+
+#[test]
+fn pad_bytes_inflates_the_tx_to_the_target_size() {
+    let head = "version: 0\nexperiment: p\nseed: 1\nwallets: { alice: {} }\n";
+    let spec = format!(
+        "{head}sources: {{ s: {{ owner: alice, lovelace: 20000000 }} }}\ntxs:\n  \
+         t: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change, pad_bytes: 8000 }}] }}\n"
+    );
+    let m = build(&spec, &context(slots(5_000, 4_990))).expect("materialises");
+    let size = tx(&m, "t").size;
+    assert!(size >= 8000, "size {size}");
+    assert!(size < 16384, "size stays under maxTxSize: {size}");
+}
+
+#[test]
+fn pad_bytes_target_must_exceed_the_natural_size() {
+    let head = "version: 0\nexperiment: p\nseed: 1\nwallets: { alice: {} }\n";
+    let spec = format!(
+        "{head}sources: {{ s: {{ owner: alice, lovelace: 20000000 }} }}\ntxs:\n  \
+         t: {{ inputs: [s], outputs: [{{ to: alice, lovelace: change, pad_bytes: 200 }}] }}\n"
+    );
+    let e = build(&spec, &context(slots(5_000, 4_990)))
+        .expect_err("rejected")
+        .to_string();
+    assert!(e.contains("not larger"), "{e}");
+}

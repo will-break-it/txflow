@@ -86,6 +86,13 @@ pub struct OutputSpec {
     /// lists none: it takes every token the tx's other outputs do not.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: Tokens,
+    /// Inflate the transaction to at least this many bytes, by padding its
+    /// auxiliary data. At most one output of a transaction may carry it. A
+    /// plain (no-Plutus) transaction can thereby hold a large share of the
+    /// mempool's byte dimension, per byte, at the same min-fee formula as
+    /// everything else, without scripts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pad_bytes: Option<u32>,
 }
 
 /// How much an output holds.

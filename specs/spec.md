@@ -366,6 +366,14 @@ names.
   whatever those slots are, so a run can build its experiment transactions when it knows
   when it starts (data model §2).
 
+**Size**
+
+- **FR-033**: A spec MUST be able to inflate a plain transaction to at least a chosen
+  size (`pad_bytes` on an output), by padding its auxiliary data in 64-byte chunks, and
+  MUST reject a target on more than one output, one that does not exceed the
+  transaction's natural size, or one past the network's `maxTxSize`, so a schedule can
+  fill the mempool's byte dimension without scripts (data model §2).
+
 **Native assets**
 
 - **FR-032**: A spec MUST be able to declare minting policies that need no key, each a

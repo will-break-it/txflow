@@ -161,6 +161,11 @@
             }
           ]
         },
+        "pad_bytes": {
+          "description": "Inflate this transaction to at least this many bytes, by padding its auxiliary data. At most one output of a transaction may carry it. The result must stay under the network's maxTxSize.",
+          "minimum": 1,
+          "type": "integer"
+        },
         "to": {
           "description": "Owning wallet.",
           "pattern": "^[a-z][a-z0-9_]*$",

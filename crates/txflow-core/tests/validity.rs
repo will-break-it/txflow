@@ -326,3 +326,16 @@ fn a_release_tip_window_that_closes_by_the_checked_slot_never_lands() {
         .iter()
         .all(|w| !w.contains("`t` can never land")));
 }
+
+#[test]
+fn pad_bytes_on_two_outputs_is_rejected() {
+    let text = format!(
+        "{HEAD}sources: {{ s: {{ owner: alice, lovelace: 9000000 }} }}\ntxs:\n  \
+         t: {{ inputs: [s], outputs: [\n    {{ to: alice, lovelace: change, pad_bytes: 5000 }},\n    {{ to: alice, lovelace: min, pad_bytes: 6000 }}] }}\n"
+    );
+    assert!(
+        error(&text).contains("`pad_bytes` may be set on at most one output"),
+        "{}",
+        error(&text)
+    );
+}
