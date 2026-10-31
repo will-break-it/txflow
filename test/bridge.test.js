@@ -44,7 +44,6 @@ test("bridge reports relays, tips and UTxOs through the relay's socket", async (
     const relays = await (await fetch(`${b.base}/relays`)).json();
     assert.deepEqual(relays.map((r) => [r.id, r.open]), [
       ["frankfurt", true], ["virginia", true], ["tokyo", false],
-      ["oregon", false], ["sydney", false], ["saopaulo", false], ["mumbai", false],
     ]);
 
     const tip = await (await fetch(`${b.base}/tip?relay=frankfurt`)).json();

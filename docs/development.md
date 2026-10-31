@@ -27,7 +27,7 @@ an offset from the start and optionally spaced out.
 
 [`networks/musashi.json`](../networks/musashi.json) lists the relays of the
 Leios Musashi test network, named after the cities of their AWS regions
-(`frankfurt`, `virginia`, `tokyo`, `oregon`, `sydney`, `saopaulo`, `mumbai`; the earlier ids `europe`, `americas` and
+(`frankfurt`, `virginia`, `tokyo`; the earlier ids `europe`, `americas` and
 `asia` still work, with a warning). Specs, `txflow check --network` and
 the sites built on txflow read it, and a release naming any other relay is an
 error. Relay addresses are public configuration, not secrets. They change when
