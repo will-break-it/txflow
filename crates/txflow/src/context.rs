@@ -86,7 +86,9 @@ impl From<NetworkName> for pallas_addresses::Network {
 
 /// The protocol parameters materialise uses. Field aliases accept the names
 /// `cardano-cli query protocol-parameters` prints; other fields are ignored.
-/// The script fields are needed only by txs with a script cost.
+/// The script fields are needed only by txs with a script cost, the value
+/// size only by txs that mint, and the reference-script price only by runs
+/// whose outputs carry reference scripts.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct ProtocolParams {
     #[serde(alias = "txFeePerByte")]
@@ -136,6 +138,47 @@ pub struct ProtocolParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_value_size: Option<u64>,
+    /// Lovelace per byte of reference scripts a tx spends or reads, before
+    /// the ledger's tiers; read only when an output carries one.
+    #[serde(
+        default,
+        alias = "minFeeRefScriptCostPerByte",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_fee_ref_script_cost_per_byte: Option<Rational>,
+    /// Bytes of reference scripts per fee tier; the Conway ledger's fixed
+    /// 25 600 when not given (a Dijkstra protocol parameter).
+    #[serde(
+        default,
+        alias = "refScriptCostStride",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ref_script_cost_stride: Option<u64>,
+    /// How much dearer each tier is per byte than the one before; Conway's
+    /// fixed 1.2 when not given (a Dijkstra protocol parameter).
+    #[serde(
+        default,
+        alias = "refScriptCostMultiplier",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ref_script_cost_multiplier: Option<Rational>,
+    /// The most bytes of reference scripts a tx may spend or read; Conway's
+    /// fixed 204 800 when not given (a Dijkstra protocol parameter).
+    #[serde(
+        default,
+        alias = "maxRefScriptSizePerTx",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_ref_script_size_per_tx: Option<u64>,
+    /// Lovelace per multi-asset policy in a tx's reference inputs (Dijkstra).
+    /// txflow does not charge it, so a run with a reference input that holds
+    /// native assets is refused when it is not 0.
+    #[serde(
+        default,
+        alias = "refInputsCostPerMultiAssetPolicy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ref_inputs_cost_per_multi_asset_policy: Option<u64>,
 }
 
 impl ProtocolParams {
@@ -149,6 +192,42 @@ impl ProtocolParams {
             protocol_version: None,
             ..self.clone()
         }
+    }
+
+    /// These parameters without the ones only runs whose outputs carry
+    /// reference scripts read.
+    pub fn without_reference_scripts(&self) -> ProtocolParams {
+        ProtocolParams {
+            min_fee_ref_script_cost_per_byte: None,
+            ..self.without_dijkstra_reference_scripts()
+        }
+    }
+
+    /// These parameters without the reference-script tiers and limit, which
+    /// Dijkstra makes parameters and Conway fixes.
+    fn without_dijkstra_reference_scripts(&self) -> ProtocolParams {
+        ProtocolParams {
+            ref_script_cost_stride: None,
+            ref_script_cost_multiplier: None,
+            max_ref_script_size_per_tx: None,
+            ..self.clone()
+        }
+    }
+
+    /// These parameters without the one only runs with a reference input
+    /// that holds native assets read.
+    pub fn without_reference_input_costs(&self) -> ProtocolParams {
+        ProtocolParams {
+            ref_inputs_cost_per_multi_asset_policy: None,
+            ..self.clone()
+        }
+    }
+
+    /// These parameters without the ones only Dijkstra has, as a Conway
+    /// ledger applies them.
+    pub fn without_dijkstra_parameters(&self) -> ProtocolParams {
+        self.without_dijkstra_reference_scripts()
+            .without_reference_input_costs()
     }
 
     /// These parameters without the one only txs with native assets read.
@@ -189,7 +268,8 @@ pub struct ProtocolVersion {
 }
 
 /// A non-negative fraction. Read from a decimal number (`0.0577`, `7.21e-05`,
-/// taken exactly as written) or `{ numerator, denominator }`; written as the latter.
+/// taken exactly as written, in lowest terms) or `{ numerator, denominator }`
+/// (as given); written as the latter.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rational {
     pub numerator: u64,
@@ -235,11 +315,20 @@ impl Rational {
         let denominator = 10u64
             .checked_pow(fraction.len() as u32)
             .ok_or_else(|| format!("{value} has too many decimals"))?;
-        let divisor = gcd(numerator, denominator);
         Ok(Rational {
-            numerator: numerator / divisor,
-            denominator: denominator / divisor,
-        })
+            numerator,
+            denominator,
+        }
+        .reduced())
+    }
+
+    /// The same fraction in lowest terms.
+    pub fn reduced(self) -> Rational {
+        let divisor = gcd(self.numerator, self.denominator);
+        Rational {
+            numerator: self.numerator / divisor,
+            denominator: self.denominator / divisor,
+        }
     }
 }
 
@@ -251,7 +340,8 @@ fn gcd(a: u64, b: u64) -> u64 {
     }
 }
 
-/// A UTxO offered for funding the experiment.
+/// A UTxO offered for funding the experiment: ADA only, with no native
+/// assets and no reference script, which funding would not pay for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OfferedUtxo {
     pub tx_id: [u8; 32],

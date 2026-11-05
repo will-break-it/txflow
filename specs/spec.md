@@ -380,6 +380,18 @@ names.
   transaction's natural size, or one past the network's `maxTxSize`, so a schedule can
   fill the mempool's byte dimension without scripts (data model §2).
 
+**Reference scripts**
+
+- **FR-034**: A spec MUST be able to give an output a reference script of a chosen
+  size (`reference_script: { bytes }`), which materialise MUST build as a Plutus V3
+  script of exactly that size. Expand MUST reject a size no Plutus script has, and
+  materialise MUST reject a transaction that spends or reads more reference scripts
+  than the network allows (204 800 bytes on Conway; `maxRefScriptSizePerTx` on
+  Dijkstra, as are the fee tiers). Materialise MUST size the output's minimum ADA for its script, and every
+  transaction that spends or reads scripts, including a sweep, MUST pay the ledger's
+  tiered reference-script fee for them, so a spec can load the mempool with
+  transactions whose validation resolves large scripts (data model §2).
+
 **Native assets**
 
 - **FR-032**: A spec MUST be able to declare minting policies that need no key, each a

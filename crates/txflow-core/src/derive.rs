@@ -189,7 +189,8 @@ pub fn membership(
 /// `blake2b256:<hex>` over the canonical JSON of the IR without `derived`:
 /// object keys sorted, `inputs` and `reference_inputs` sorted (they are sets),
 /// empty `labels`, `reference_inputs`, `metadata`, `policies`, `mint` and
-/// `tokens`, a missing `color`, `cost` and `validity`, and a window's `anchor`
+/// `tokens`, a missing `color`, `cost`, `validity` and `reference_script`,
+/// and a window's `anchor`
 /// when it is `start`, omitted, so a graph without them hashes as it did
 /// before they existed. Streamed into the hasher, so no copy of the IR is
 /// made, and independent of struct field order and
@@ -380,6 +381,9 @@ fn canonical(out: &mut impl Write, ir: &Ir) -> Result<()> {
                 Amount::Keyword(AmountKeyword::Min) => out.write_all(b"\"min\"")?,
                 Amount::Keyword(AmountKeyword::Change) => out.write_all(b"\"change\"")?,
             }
+            if let Some(script) = output.reference_script {
+                write!(out, ",\"reference_script\":{{\"bytes\":{}}}", script.bytes)?;
+            }
             out.write_all(b",\"to\":")?;
             text(out, &output.to)?;
             if !output.tokens.is_empty() {
@@ -468,6 +472,11 @@ pub(crate) fn validate(ir: &Ir) -> Result<()> {
                     "tx `{name}`: unknown wallet `{}`",
                     output.to
                 )));
+            }
+            if let Some(script) = &output.reference_script {
+                script
+                    .validate()
+                    .map_err(|e| Error::Graph(format!("tx `{name}`: {e}")))?;
             }
         }
         let mut seen = BTreeSet::new();

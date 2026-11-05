@@ -4,7 +4,7 @@
 # The built transactions are valid in shape only and will be rejected by a
 # node. For a real run, offer UTxOs held by your own payment key and point
 # `signing_key_file` at its `.skey`; never commit that key. Offered UTxOs
-# must hold ADA only (no native tokens).
+# must hold ADA only (no native tokens, no reference script).
 network: testnet
 magic: 164            # recorded in the manifest
 era: dijkstra          # txs are encoded in the Dijkstra format (no is_valid flag)
@@ -17,6 +17,7 @@ pparams:
   max_tx_size: 16384
   coins_per_utxo_byte: 4310
   max_value_size: 5000   # read only when a tx mints native assets
+  min_fee_ref_script_cost_per_byte: 15   # read only when an output carries a reference script
 funding:
   signing_key_hex: "00000000000000000000000000000000000000000000000000000000000000a1"
   utxos:

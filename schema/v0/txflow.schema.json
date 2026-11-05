@@ -166,6 +166,30 @@
           "minimum": 1,
           "type": "integer"
         },
+        "reference_script": {
+          "additionalProperties": false,
+          "description": "A reference script (CIP-33) this output carries: a Plutus V3 script of exactly `bytes` bytes that nothing runs. A transaction that spends or reads the output pays the network's reference-script fee for those bytes, and may read at most 204800 bytes of them on a Conway network (Dijkstra sets its own limit). The script must fit in the transaction that creates it, under the network's maxTxSize, and raises the output's minimum ADA.",
+          "properties": {
+            "bytes": {
+              "description": "The script's size, as the ledger counts it for the reference-script fee. No Plutus script is 25, 258, 65539, 65540 bytes.",
+              "maximum": 204800,
+              "minimum": 8,
+              "not": {
+                "enum": [
+                  25,
+                  258,
+                  65539,
+                  65540
+                ]
+              },
+              "type": "integer"
+            }
+          },
+          "required": [
+            "bytes"
+          ],
+          "type": "object"
+        },
         "to": {
           "description": "Owning wallet.",
           "pattern": "^[a-z][a-z0-9_]*$",

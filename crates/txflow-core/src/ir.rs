@@ -10,7 +10,8 @@
 //! that much execution, without changing the graph. It may also carry a
 //! [`Validity`] window, which materialise writes as the tx's validity
 //! interval. A tx may mint or burn native assets under the IR's time-lock
-//! `policies`, and its outputs may hold them (see [`crate::assets`]). No
+//! `policies`, and its outputs may hold them (see [`crate::assets`]). An
+//! output may carry a reference script (see [`crate::refscript`]). No
 //! datums. Unknown fields are rejected so an unsupported feature fails loudly.
 
 use std::collections::BTreeMap;
@@ -21,6 +22,7 @@ use crate::assets::{Mint, Policy, Tokens};
 use crate::cost::Cost;
 use crate::error::{Error, Result};
 use crate::metadata::Metadata;
+use crate::refscript::ReferenceScript;
 use crate::validity::Validity;
 
 /// The graph IR. Maps are `BTreeMap`s so serialisation is canonical.
@@ -93,6 +95,10 @@ pub struct OutputSpec {
     /// everything else, without scripts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pad_bytes: Option<u32>,
+    /// A reference script (CIP-33) this output carries, by size: a tx that
+    /// spends or reads the output pays the reference-script fee for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_script: Option<ReferenceScript>,
 }
 
 /// How much an output holds.

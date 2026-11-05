@@ -68,7 +68,10 @@ tip, and chain short-lived txs with a `step` per generation
 under time-lock `policies`, each its own policy id, and move UTxOs that hold
 hundreds of them: `asset_shuffle` mints them, merges the UTxOs into one and
 splits it again with the assets shuffled
-([example](examples/asset-shuffle.yaml)). Every field is in the
+([example](examples/asset-shuffle.yaml)). Give an output a
+`reference_script` such as `{ bytes: 15000 }` and every tx that spends or reads
+it pays the reference-script fee for that many bytes
+([example](examples/reference-script-readers.yaml)). Every field is in the
 [spec reference](https://txflow.fun/spec.html); the JSON Schema is at
 [txflow.fun/schema/v0.json](https://txflow.fun/schema/v0.json) (source in
 [`schema/v0/`](schema/v0/)).

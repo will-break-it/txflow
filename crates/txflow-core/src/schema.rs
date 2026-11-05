@@ -9,6 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::catalogue::{ArgKind, PatternInfo, COMMON_ARGS, PATTERNS};
 use crate::metadata::{COLOR_LABEL, MAX_STRING_BYTES, MESSAGE_LABEL};
+use crate::refscript::{MAX_BYTES_PER_TX, MIN_BYTES, UNREACHABLE};
 use crate::spec::VERSION;
 
 /// Spelling of wallet, source, tx, pattern and param names.
@@ -338,6 +339,33 @@ fn defs() -> Value {
                     "description": "Inflate this transaction to at least this many bytes, \
                         by padding its auxiliary data. At most one output of a transaction \
                         may carry it. The result must stay under the network's maxTxSize."
+                },
+                "reference_script": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["bytes"],
+                    "description": format!(
+                        "A reference script (CIP-33) this output carries: a Plutus V3 \
+                         script of exactly `bytes` bytes that nothing runs. A transaction \
+                         that spends or reads the output pays the network's reference-script \
+                         fee for those bytes, and may read at most {MAX_BYTES_PER_TX} bytes \
+                         of them on a Conway network (Dijkstra sets its own limit). The \
+                         script must fit in the transaction that creates it, under the \
+                         network's maxTxSize, and raises the output's minimum ADA."
+                    ),
+                    "properties": {
+                        "bytes": {
+                            "type": "integer",
+                            "minimum": MIN_BYTES,
+                            "maximum": MAX_BYTES_PER_TX,
+                            "not": { "enum": UNREACHABLE },
+                            "description": format!(
+                                "The script's size, as the ledger counts it for the \
+                                 reference-script fee. No Plutus script is {} bytes.",
+                                UNREACHABLE.map(|b| b.to_string()).join(", ")
+                            )
+                        }
+                    }
                 }
             }
         }),
