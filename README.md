@@ -71,22 +71,52 @@ splits it again with the assets shuffled
 ([example](examples/asset-shuffle.yaml)). Every field is in the
 [spec reference](https://txflow.fun/spec.html); the JSON Schema is at
 [txflow.fun/schema/v0.json](https://txflow.fun/schema/v0.json) (source in
-[`core/schema/v0/`](schema/v0/)).
+[`schema/v0/`](schema/v0/)).
 
 ## The CLI
 
 ```sh
-cargo run --manifest-path core/Cargo.toml -p txflow -- check examples/relay-race.yaml --network networks/musashi.json
-cargo run --manifest-path core/Cargo.toml -p txflow -- expand examples/relay-race.yaml       # the transaction graph
-cargo run --manifest-path core/Cargo.toml -p txflow -- materialise examples/conflicting-chains.yaml \
+cargo run -p txflow -- check examples/relay-race.yaml --network networks/musashi.json
+cargo run -p txflow -- expand examples/relay-race.yaml       # the transaction graph
+cargo run -p txflow -- materialise examples/conflicting-chains.yaml \
   --context examples/demo-context.yaml -o manifest.json      # signed txs, offline
-cargo run --manifest-path core/Cargo.toml -p txflow -- schema                                # the JSON Schema
+cargo run -p txflow -- schema                                # the JSON Schema
 ```
 
 Builds for Linux and macOS are on the [releases page](../../releases), next to
 each spec version's schema. The demo context uses a publicly known dummy key and
 a fake funding UTxO, so its transactions are well formed but no node will
 accept them.
+
+### Larger runs
+
+The caps in [`limits.json`](limits.json) (500 transactions, paths of 100, …)
+are one deployment's policy, not part of the spec. The CLI holds a spec to a
+limits file only when you pass `--limits`, so a spec with thousands of
+transactions checks, expands and materialises on your machine (`txflow`
+here is a release build, or `cargo run -p txflow --`):
+
+```sh
+txflow check big.yaml --network networks/musashi.json   # no caps
+txflow check big.yaml --limits limits.json              # what that deployment would accept
+txflow materialise big.yaml --context my-context.yaml -o manifest.json
+```
+
+`materialise` builds and signs; it sends nothing. For a real run, copy
+[`examples/demo-context.yaml`](examples/demo-context.yaml) and offer UTxOs
+held by your own payment key, then submit the manifest's `txs` in order
+(funding first, each as `cbor_hex`) with `cardano-cli transaction submit`
+against a node you can reach, or through a [relay bridge](docs/bridge.md)'s
+`POST /submit`. The spec's `schedule` says which relay gets which
+transaction and when; the manifest keeps each one's `name` and `labels` to
+match them.
+
+**With an LLM.** An LLM agent that can run commands in a checkout can write
+and drive these specs. `txflow catalogue`, `txflow limits <file>` and
+`txflow network <file>` print Markdown written for a person or a model
+writing a spec, and `txflow schema` the JSON Schema. Have it write the YAML
+and run `txflow check` until it passes, then `expand` to see the graph. Give
+it the context file's path, never a signing key's contents.
 
 ## Repository
 
