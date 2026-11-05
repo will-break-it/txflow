@@ -8,16 +8,21 @@
     "priceSteps": 7.21e-05
   },
   "maxCollateralInputs": 3,
+  "maxRefScriptSizePerTx": 204800,
   "maxTxExecutionUnits": {
     "memory": 16500000,
     "steps": 10000000000
   },
   "maxTxSize": 16384,
   "maxValueSize": 5000,
+  "minFeeRefScriptCostPerByte": 15,
   "protocolVersion": {
     "major": 12,
     "minor": 0
   },
+  "refInputsCostPerMultiAssetPolicy": 0,
+  "refScriptCostMultiplier": 1.2,
+  "refScriptCostStride": 25600,
   "txFeeFixed": 155381,
   "txFeePerByte": 44,
   "utxoCostPerByte": 4310

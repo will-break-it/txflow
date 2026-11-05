@@ -20,6 +20,7 @@ pub mod limits;
 pub mod metadata;
 pub mod network;
 pub mod patterns;
+pub mod refscript;
 pub mod schedule;
 pub mod schema;
 pub mod spec;

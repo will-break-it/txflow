@@ -1186,6 +1186,7 @@ version = "0.3.0"
 dependencies = [
  "clap",
  "hex",
+ "num-bigint",
  "pallas-addresses 1.4.0",
  "pallas-codec 1.4.0",
  "pallas-crypto 1.4.0",

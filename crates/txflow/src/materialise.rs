@@ -43,6 +43,7 @@ use crate::derive;
 use crate::error::{Error, Result};
 use crate::ir::{Amount, AmountKeyword, Ir, Tx};
 use crate::metadata::{auxiliary_data, Metadata};
+use crate::refscript;
 use txflow_core::assets::Mint;
 use txflow_core::cost::Cost;
 use txflow_core::validity::{Anchor, Validity};
@@ -220,7 +221,22 @@ pub struct ManifestTx {
     /// The first slot the tx is valid in, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_from_slot: Option<u64>,
+    /// Bytes of the reference script each output carries (0 for none), in
+    /// output order; empty when none carries one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reference_scripts: Vec<u32>,
+    /// The reference scripts the tx spends or reads, and the fee it pays for them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_scripts_read: Option<ManifestScriptsRead>,
     pub cbor_hex: String,
+}
+
+/// Bytes of reference scripts a tx spends or reads, and their fee.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManifestScriptsRead {
+    pub bytes: u64,
+    /// Lovelace, part of the tx's `fee`.
+    pub fee: u64,
 }
 
 /// An input as named in the IR and as spent on chain.
@@ -247,6 +263,8 @@ pub(crate) struct PlannedOutput {
     pub(crate) lovelace: Option<u64>,
     /// Native assets it holds.
     pub(crate) assets: Assets,
+    /// The Plutus V3 reference script it carries, if any.
+    pub(crate) script: Option<std::rc::Rc<[u8]>>,
 }
 
 /// What [`build_signed`] returns.
@@ -262,6 +280,17 @@ pub enum TxFormat {
 }
 
 impl TxFormat {
+    /// `pp` as this format's ledger applies them: Conway fixes the
+    /// reference-script tiers and limit and has no reference-input charge,
+    /// so those parameters, which a Dijkstra node's `pparams_file` may give,
+    /// are dropped and the reference-script pricing falls back to Conway's.
+    pub fn parameters(self, pp: &ProtocolParams) -> ProtocolParams {
+        match self {
+            TxFormat::Dijkstra => pp.clone(),
+            TxFormat::Conway => pp.without_dijkstra_parameters(),
+        }
+    }
+
     pub fn for_era(era: &str) -> TxFormat {
         if era.eq_ignore_ascii_case("dijkstra") {
             TxFormat::Dijkstra
@@ -354,6 +383,8 @@ pub(crate) struct Built {
     /// The same tx in the Conway format, which the script evaluator reads.
     pub(crate) conway_bytes: Vec<u8>,
     pub(crate) fee: u64,
+    /// The part of `fee` paid for the reference scripts it spends or reads.
+    pub(crate) ref_script_fee: u64,
     pub(crate) outputs: Vec<u64>,
 }
 
@@ -389,8 +420,8 @@ pub fn materialise(
     context: &ChainContext,
 ) -> Result<Manifest> {
     let derived = derive::derive(ir)?;
-    let pp = &context.pparams;
     let format = TxFormat::for_era(&context.era);
+    let pp = &format.parameters(&context.pparams);
     let network = match context.network {
         NetworkName::Testnet => Network::Testnet,
         NetworkName::Mainnet => Network::Mainnet,
@@ -454,6 +485,93 @@ pub fn materialise(
         true => recorded,
         false => recorded.without_assets(),
     };
+    // Reference scripts: bytes each tx spends or reads. A run whose outputs
+    // carry scripts needs, and records, their price: the txs that read them
+    // pay it, and so does the sweep of whatever the run leaves.
+    let carries_scripts = ir
+        .txs
+        .values()
+        .any(|tx| txflow_core::refscript::carried_by(tx) > 0);
+    let mut read_of: BTreeMap<&String, u64> = BTreeMap::new();
+    // `tx.N` → the script that output carries, made before anything is
+    // built. Each is tagged with the spec, seed and output, so outputs'
+    // scripts differ, within a run and across runs (except small ones; see
+    // `refscript::script_of_size`).
+    let mut script_of: BTreeMap<String, std::rc::Rc<[u8]>> = BTreeMap::new();
+    if carries_scripts {
+        read_of = txflow_core::refscript::reads(ir)?;
+        let pricing = refscript::Pricing::of(pp)?;
+        let mut scripts = refscript::Scripts::default();
+        for (name, tx) in &ir.txs {
+            // Such a tx could never be built: refuse it before making its
+            // scripts, which would otherwise all be held at once.
+            let carried = txflow_core::refscript::carried_by(tx);
+            if carried > pp.max_tx_size {
+                return Err(Error::Materialise(format!(
+                    "tx `{name}` creates {carried} bytes of reference scripts, more \
+                     than a transaction holds, {} (maxTxSize)",
+                    pp.max_tx_size
+                )));
+            }
+            // A script past the network's limit could be neither read nor swept.
+            for (i, output) in tx.outputs.iter().enumerate() {
+                let Some(script) = output.reference_script else {
+                    continue;
+                };
+                if u64::from(script.bytes) > pricing.max_per_tx {
+                    return Err(Error::Materialise(format!(
+                        "tx `{name}`: a reference script of {} bytes is more than this \
+                         network lets a tx spend or read, {} (maxRefScriptSizePerTx)",
+                        script.bytes, pricing.max_per_tx
+                    )));
+                }
+                let reference = format!("{name}.{i}");
+                let tag = Hasher::<256>::hash(
+                    format!("txflow/refscript/{}/{seed}/{reference}", derived.hash).as_bytes(),
+                );
+                let made = scripts
+                    .make(script.bytes, tag.as_ref())
+                    .map_err(|e| in_tx(name, e))?;
+                script_of.insert(reference, made.into());
+            }
+        }
+        for (name, read) in &read_of {
+            if *read > pricing.max_per_tx {
+                return Err(Error::Materialise(format!(
+                    "tx `{name}` spends or reads {read} bytes of reference scripts; this \
+                     network allows at most {} (maxRefScriptSizePerTx)",
+                    pricing.max_per_tx
+                )));
+            }
+        }
+    }
+    let recorded = match carries_scripts {
+        true => recorded,
+        false => recorded.without_reference_scripts(),
+    };
+    // Dijkstra may charge for native assets in reference inputs, which txflow
+    // does not build; refuse such a read rather than underpay it.
+    let reads_assets = ir.txs.values().any(|tx| {
+        tx.reference_inputs
+            .iter()
+            .any(|r| tokens_of.get(r).is_some_and(|t| !t.is_empty()))
+    });
+    // Conway has no such charge, and a context that does not give one is
+    // taken at its word, as before the parameter existed.
+    let charged = pp
+        .ref_inputs_cost_per_multi_asset_policy
+        .is_some_and(|cost| cost > 0);
+    if reads_assets && charged {
+        return Err(Error::Materialise(
+            "a reference input holds native assets, which this network may charge for \
+             (refInputsCostPerMultiAssetPolicy is not 0); txflow does not build that \
+             charge yet"
+                .to_string(),
+        ));
+    }
+    // So the charge is 0 or not given, which builds the same txs: it is not
+    // recorded, and runs keep their id whatever the context says of it.
+    let recorded = recorded.without_reference_input_costs();
 
     // Each script tx's target, the burner's knobs for it, and their fee, in
     // topological order; made before funding so an unreachable cost stops the
@@ -518,10 +636,16 @@ pub fn materialise(
         .iter()
         .map(|(n, s)| (n.clone(), s.lovelace, run_address.clone()))
         .collect();
+    // The collateral covers a script tx's whole fee, reference scripts included.
+    let most_read_by_script_tx = costed
+        .iter()
+        .filter_map(|(name, _)| read_of.get(name).copied())
+        .max()
+        .unwrap_or(0);
     if let Some(setup) = &setup {
         sources.push((
             COLLATERAL.to_string(),
-            collateral_lovelace(pp, setup)?.max(min_lovelace),
+            collateral_lovelace(pp, setup, most_read_by_script_tx)?.max(min_lovelace),
             run_address.clone(),
         ));
         // Fuel also pays its tx's execution fee, so a cost needs no larger sources.
@@ -582,6 +706,7 @@ pub fn materialise(
                 address: address.clone(),
                 lovelace: Some(*lovelace),
                 assets: Assets::new(),
+                script: None,
             })
             .collect();
         let change_to = if k + 1 == chunks.len() {
@@ -593,6 +718,7 @@ pub fn materialise(
             address: change_to.clone(),
             lovelace: None,
             assets: Assets::new(),
+            script: None,
         });
         let built = build_signed(
             &carry,
@@ -653,9 +779,10 @@ pub fn materialise(
                 Some(tokens) => policies.assets(tokens).map_err(|e| in_tx(name, e))?,
                 None => Assets::new(),
             };
-            let min = match held.is_empty() {
-                true => min_lovelace,
-                false => assets::min_lovelace(&run_address, &held, pp)?,
+            let script = script_of.get(&format!("{name}.{i}")).cloned();
+            let min = match (held.is_empty(), &script) {
+                (true, None) => min_lovelace,
+                _ => assets::min_lovelace_with(&run_address, &held, script.as_deref(), pp)?,
             };
             let lovelace = match output.lovelace {
                 Amount::Fixed(l) => {
@@ -673,6 +800,7 @@ pub fn materialise(
                 address: run_address.clone(),
                 lovelace,
                 assets: held,
+                script,
             });
         }
         let pad: Option<u32> = {
@@ -688,6 +816,8 @@ pub fn materialise(
             }
             first
         };
+        // Bytes of reference scripts on what it spends or reads.
+        let read = read_of.get(name).copied().unwrap_or(0);
         let mint = policies.minting(&tx.mint).map_err(|e| in_tx(name, e))?;
         let mut input_refs = tx.inputs.clone();
         let run = match (plan_of.get(name), &setup) {
@@ -728,6 +858,7 @@ pub fn materialise(
             run.as_ref().map(|(_, _, run)| run),
             window_of.get(name).map(|(_, window)| window),
             mint.as_ref(),
+            read,
         )
         .map_err(|e| in_tx(name, e))?;
         // `pad_bytes` names a *total* size, only known once the fee has
@@ -766,6 +897,7 @@ pub fn materialise(
                     run.as_ref().map(|(_, _, run)| run),
                     window_of.get(name).map(|(_, window)| window),
                     mint.as_ref(),
+                    read,
                 )
                 .map_err(|e| in_tx(name, e))?
             }
@@ -789,7 +921,7 @@ pub fn materialise(
         let mut collateral_entry = None;
         if let (Some((requested, target, run)), Some(setup)) = (&run, &setup) {
             // Every input the evaluator needs, with the address it sits at.
-            let mut resolved_inputs: Vec<(Input, u64, &Address, Assets)> = Vec::new();
+            let mut resolved_inputs: Vec<Resolved> = Vec::new();
             for (reference, (input, lovelace)) in tx
                 .inputs
                 .iter()
@@ -806,7 +938,8 @@ pub fn materialise(
                     Some(tokens) => policies.assets(tokens)?,
                     None => Assets::new(),
                 };
-                resolved_inputs.push((input.clone(), *lovelace, address, held));
+                let script = script_of.get(reference).map(|script| &script[..]);
+                resolved_inputs.push((input.clone(), *lovelace, address, held, script));
             }
             let collateral_lovelace = utxos.get(COLLATERAL).map(|(_, l)| *l).unwrap_or(0);
             resolved_inputs.push((
@@ -814,6 +947,7 @@ pub fn materialise(
                 collateral_lovelace,
                 &run_address,
                 Assets::new(),
+                None,
             ));
             let measured = measure(&built.conway_bytes, &resolved_inputs, setup)
                 .map_err(|e| in_tx(name, e))?;
@@ -845,6 +979,11 @@ pub fn materialise(
                 (Input::new(tx_hash, i as u64), *lovelace),
             );
         }
+        let carried: Vec<u32> = tx
+            .outputs
+            .iter()
+            .map(|o| o.reference_script.map_or(0, |s| s.bytes))
+            .collect();
         let mut entry = manifest_tx(
             index,
             name,
@@ -863,6 +1002,15 @@ pub fn materialise(
                 window: *window,
             });
         entry.mint = tx.mint.clone();
+        if carried.iter().any(|b| *b > 0) {
+            entry.reference_scripts = carried;
+        }
+        if read > 0 {
+            entry.reference_scripts_read = Some(ManifestScriptsRead {
+                bytes: read,
+                fee: built.ref_script_fee,
+            });
+        }
         if planned.iter().any(|o| !o.assets.is_empty()) {
             entry.assets = planned.iter().map(|o| assets::count(&o.assets)).collect();
         }
@@ -1032,34 +1180,42 @@ fn script_fee(prices: &crate::context::ExecutionPrices, units: Units) -> Result<
 }
 
 /// Enough collateral for any tx: the fee of a maximum-size tx using the
-/// whole per-tx execution limit, times the collateral percentage.
-fn collateral_lovelace(pp: &ProtocolParams, setup: &ScriptSetup) -> Result<u64> {
+/// whole per-tx execution limit and reading `ref_script_bytes` of reference
+/// scripts (the most any script tx reads), times the collateral percentage.
+fn collateral_lovelace(
+    pp: &ProtocolParams,
+    setup: &ScriptSetup,
+    ref_script_bytes: u64,
+) -> Result<u64> {
+    let overflow = || Error::Materialise("collateral overflows".to_string());
     let percentage = setup.collateral_percentage;
+    let execution = script_fee(
+        &setup.prices,
+        Units {
+            steps: setup.limit.steps,
+            mem: setup.limit.memory,
+        },
+    )?;
+    let reference = refscript::fee_for(ref_script_bytes, pp)?;
     let most = max_fee(pp)?
-        .checked_add(script_fee(
-            &setup.prices,
-            Units {
-                steps: setup.limit.steps,
-                mem: setup.limit.memory,
-            },
-        )?)
-        .ok_or_else(|| Error::Materialise("collateral overflows".to_string()))?;
+        .checked_add(execution)
+        .and_then(|f| f.checked_add(reference))
+        .ok_or_else(overflow)?;
     let needed = u128::from(most) * u128::from(percentage);
-    u64::try_from(needed.div_ceil(100))
-        .map_err(|_| Error::Materialise("collateral overflows".to_string()))
+    u64::try_from(needed.div_ceil(100)).map_err(|_| overflow())
 }
 
+/// An input as the evaluator sees it: its value, its address, its assets
+/// and the reference script it carries.
+type Resolved<'a> = (Input, u64, &'a Address, Assets, Option<&'a [u8]>);
+
 /// Evaluate the tx's script run with the Plutus evaluator and return what it used.
-fn measure(
-    conway: &[u8],
-    inputs: &[(Input, u64, &Address, Assets)],
-    setup: &ScriptSetup,
-) -> Result<Units> {
+fn measure(conway: &[u8], inputs: &[Resolved], setup: &ScriptSetup) -> Result<Units> {
     let encode = |e: minicbor::encode::Error<std::convert::Infallible>| {
         Error::Materialise(format!("encoding a resolved input: {e}"))
     };
     let mut utxos: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for (input, lovelace, address, held) in inputs {
+    for (input, lovelace, address, held, script) in inputs {
         let key = conway::TransactionInput {
             transaction_id: Hash::new(input.tx_hash.0),
             index: input.txo_index,
@@ -1069,7 +1225,7 @@ fn measure(
                 address: address.to_vec().into(),
                 value: assets::value(*lovelace, held)?,
                 datum_option: None,
-                script_ref: None,
+                script_ref: script.map(assets::script_ref),
             },
         ));
         utxos.push((
@@ -1358,6 +1514,19 @@ fn pparams_hash(pp: &ProtocolParams) -> String {
         hasher.input(b"max_value_size");
         hasher.input(&size.to_be_bytes());
     }
+    // And the reference-script pricing, recorded only when outputs carry
+    // scripts: its effective values, Conway's where the context leaves them
+    // out, fractions in lowest terms, so equal pricing hashes alike however
+    // it is written.
+    if let Ok(pricing) = refscript::Pricing::of(pp) {
+        hasher.input(b"reference_scripts");
+        for value in [pricing.price.reduced(), pricing.multiplier.reduced()] {
+            hasher.input(&value.numerator.to_be_bytes());
+            hasher.input(&value.denominator.to_be_bytes());
+        }
+        hasher.input(&pricing.stride.to_be_bytes());
+        hasher.input(&pricing.max_per_tx.to_be_bytes());
+    }
     format!("blake2b256:{}", hex::encode(hasher.finalize()))
 }
 
@@ -1391,10 +1560,12 @@ pub(crate) fn build_signed(
         None,
         None,
         None,
+        0,
     )
 }
 
-/// [`build_signed`] with the mint (or burn) part of a tx.
+/// [`build_signed`] with the mint (or burn) part of a tx, and the bytes of
+/// reference scripts its inputs carry.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_signed_minting(
     inputs: &[(Input, u64)],
@@ -1404,6 +1575,7 @@ pub(crate) fn build_signed_minting(
     pp: &ProtocolParams,
     format: TxFormat,
     minting: Option<&Minting>,
+    ref_script_bytes: u64,
 ) -> Result<Built> {
     build_signed_with(
         inputs,
@@ -1416,6 +1588,7 @@ pub(crate) fn build_signed_minting(
         None,
         None,
         minting,
+        ref_script_bytes,
     )
 }
 
@@ -1424,7 +1597,9 @@ pub(crate) fn build_signed_minting(
 /// hash, and the script's execution fee on top of the size fee. `window`, when
 /// given, is the tx's validity interval. With `minting`, the tx mints or
 /// burns, carries the policies' native scripts and is valid from their latest
-/// slot, or from the window's start if that is later.
+/// slot, or from the window's start if that is later. `ref_script_bytes` are
+/// the bytes of reference scripts the inputs and reference inputs carry: the
+/// tx pays their fee ([`refscript::fee_for`]) on top of the size fee.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_signed_with(
     inputs: &[(Input, u64)],
@@ -1437,10 +1612,19 @@ pub(crate) fn build_signed_with(
     script: Option<&ScriptRun>,
     window: Option<&Window>,
     minting: Option<&Minting>,
+    ref_script_bytes: u64,
 ) -> Result<Built> {
+    let ref_script_fee = refscript::fee_for(ref_script_bytes, pp)?;
     let min_change = match planned.iter().find(|o| o.lovelace.is_none()) {
-        Some(change) if change.assets.is_empty() => min_for(&change.address, pp)?,
-        Some(change) => assets::min_lovelace(&change.address, &change.assets, pp)?,
+        Some(change) if change.assets.is_empty() && change.script.is_none() => {
+            min_for(&change.address, pp)?
+        }
+        Some(change) => assets::min_lovelace_with(
+            &change.address,
+            &change.assets,
+            change.script.as_deref(),
+            pp,
+        )?,
         None => return Err(Error::Materialise("no change output".to_string())),
     };
     let total_in = inputs
@@ -1491,6 +1675,9 @@ pub(crate) fn build_signed_with(
                         .add_asset(Hash::new(*id), name.clone(), *quantity)
                         .map_err(|e| Error::Materialise(format!("build: {e}")))?;
                 }
+            }
+            if let Some(script) = &output.script {
+                built = built.set_inline_script(ScriptKind::PlutusV3, script.to_vec());
             }
             staging = staging.output(built);
         }
@@ -1562,6 +1749,7 @@ pub(crate) fn build_signed_with(
             .checked_mul(size as u64)
             .and_then(|f| f.checked_add(pp.min_fee_b))
             .and_then(|f| f.checked_add(script.map_or(0, |run| run.script_fee)))
+            .and_then(|f| f.checked_add(ref_script_fee))
             .ok_or_else(|| Error::Materialise("fee overflows".to_string()))?;
         if fee >= required {
             if size as u64 > pp.max_tx_size {
@@ -1575,6 +1763,7 @@ pub(crate) fn build_signed_with(
                 bytes,
                 conway_bytes,
                 fee,
+                ref_script_fee,
                 outputs: amounts,
             });
         }
@@ -1697,6 +1886,8 @@ fn manifest_tx(
         mint: Mint::new(),
         assets: vec![],
         valid_from_slot: None,
+        reference_scripts: vec![],
+        reference_scripts_read: None,
         cbor_hex: hex::encode(&built.bytes),
     }
 }

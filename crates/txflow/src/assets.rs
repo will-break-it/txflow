@@ -27,6 +27,13 @@ pub type Assets = BTreeMap<[u8; 28], BTreeMap<Vec<u8>, u64>>;
 /// Constant overhead the ledger adds to an output's size for min-UTxO.
 const OUTPUT_OVERHEAD: u64 = 160;
 
+/// A Plutus V3 script as an output's script reference.
+pub fn script_ref(script: &[u8]) -> pallas_codec::utils::CborWrap<conway::ScriptRef<'static>> {
+    pallas_codec::utils::CborWrap(conway::ScriptRef::PlutusV3Script(
+        conway::PlutusScript::<3>(script.to_vec().into()),
+    ))
+}
+
 /// The native script of policy `after_slot: N`, as CBOR.
 pub fn policy_script(after_slot: u64) -> Vec<u8> {
     // `[4, N]`: an array of two, the `InvalidBefore` tag and the slot.
@@ -243,12 +250,23 @@ pub fn value_size(lovelace: u64, assets: &Assets) -> Result<u64> {
 /// holding `assets`, sized with the largest coin encoding so it is an upper
 /// bound.
 pub fn min_lovelace(address: &Address, assets: &Assets, pp: &ProtocolParams) -> Result<u64> {
+    min_lovelace_with(address, assets, None, pp)
+}
+
+/// [`min_lovelace`] for an output that may also carry a Plutus V3 reference
+/// script, `script` (its bytes, as in a `[3, bytes]` script reference).
+pub fn min_lovelace_with(
+    address: &Address,
+    assets: &Assets,
+    script: Option<&[u8]>,
+    pp: &ProtocolParams,
+) -> Result<u64> {
     let output =
         conway::TransactionOutput::PostAlonzo(KeepRaw::from(conway::PostAlonzoTransactionOutput {
             address: address.to_vec().into(),
             value: value(u64::MAX, assets)?,
             datum_option: None,
-            script_ref: None,
+            script_ref: script.map(script_ref),
         }));
     let size = minicbor::to_vec(&output)
         .map_err(|e| Error::Materialise(format!("encoding an output: {e}")))?

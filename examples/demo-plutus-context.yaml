@@ -7,7 +7,7 @@
 # The built transactions are valid in shape only and will be rejected by a
 # node. For a real run, offer UTxOs held by your own payment key and point
 # `signing_key_file` at its `.skey`; never commit that key. Offered UTxOs
-# must hold ADA only (no native tokens).
+# must hold ADA only (no native tokens, no reference script).
 network: testnet
 magic: 164            # recorded in the manifest
 era: dijkstra          # txs are encoded in the Dijkstra format (no is_valid flag)

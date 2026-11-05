@@ -1,0 +1,60 @@
+# Transactions that read reference scripts, and what that costs a node. Three
+# `publish` txs each leave an output carrying a 15 000-byte reference script
+# (a Plutus V3 script that nothing runs). Then four `readers` each read all
+# three, 45 000 bytes of scripts per tx, and pay the reference-script fee for
+# them: 15 lovelace a byte for the first 25 600 bytes and 18 for the rest on
+# Musashi. Four `plain` txs of the same shape read nothing, for comparison.
+#
+# A node resolves every reference input when it takes a tx into its mempool,
+# so a reader is small on the wire but carries 45 000 bytes of scripts into
+# validation. Each tx may read at most 204 800 bytes of them.
+#   txflow check examples/reference-script-readers.yaml --network networks/musashi.json
+version: 0
+experiment: reference-script-readers
+seed: 3
+wallets:
+  alice: {}
+sources:
+  s1: { owner: alice, lovelace: 80000000 }
+  s2: { owner: alice, lovelace: 80000000 }
+  s3: { owner: alice, lovelace: 80000000 }
+  r1: { owner: alice, lovelace: 5000000 }
+  r2: { owner: alice, lovelace: 5000000 }
+  r3: { owner: alice, lovelace: 5000000 }
+  r4: { owner: alice, lovelace: 5000000 }
+  c1: { owner: alice, lovelace: 5000000 }
+  c2: { owner: alice, lovelace: 5000000 }
+  c3: { owner: alice, lovelace: 5000000 }
+  c4: { owner: alice, lovelace: 5000000 }
+txs:
+  p1:
+    inputs: [s1]
+    outputs:
+      - { to: alice, lovelace: min, reference_script: { bytes: 15000 } }
+      - { to: alice, lovelace: change }
+    labels: [publish]
+  p2:
+    inputs: [s2]
+    outputs:
+      - { to: alice, lovelace: min, reference_script: { bytes: 15000 } }
+      - { to: alice, lovelace: change }
+    labels: [publish]
+  p3:
+    inputs: [s3]
+    outputs:
+      - { to: alice, lovelace: min, reference_script: { bytes: 15000 } }
+      - { to: alice, lovelace: change }
+    labels: [publish]
+  read1: { inputs: [r1], reference_inputs: [p1.0, p2.0, p3.0], outputs: [{ to: alice, lovelace: change }], labels: [readers] }
+  read2: { inputs: [r2], reference_inputs: [p1.0, p2.0, p3.0], outputs: [{ to: alice, lovelace: change }], labels: [readers] }
+  read3: { inputs: [r3], reference_inputs: [p1.0, p2.0, p3.0], outputs: [{ to: alice, lovelace: change }], labels: [readers] }
+  read4: { inputs: [r4], reference_inputs: [p1.0, p2.0, p3.0], outputs: [{ to: alice, lovelace: change }], labels: [readers] }
+  plain1: { inputs: [c1], outputs: [{ to: alice, lovelace: change }], labels: [plain] }
+  plain2: { inputs: [c2], outputs: [{ to: alice, lovelace: change }], labels: [plain] }
+  plain3: { inputs: [c3], outputs: [{ to: alice, lovelace: change }], labels: [plain] }
+  plain4: { inputs: [c4], outputs: [{ to: alice, lovelace: change }], labels: [plain] }
+schedule:
+  releases:
+    - { select: { label: publish }, target: frankfurt }
+    - { select: { label: readers }, target: frankfurt, at: 30s, spacing: 200ms }
+    - { select: { label: plain }, target: frankfurt, at: 30s, spacing: 200ms }

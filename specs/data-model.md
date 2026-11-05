@@ -52,6 +52,7 @@ txs:
         tokens: { <policy>.<asset>: <u64> }   # optional; not on the `change` output
         datum: { bytes: <u32> } | { inline: <cbor-hex> }   # optional
         pad_bytes: <u32>               # optional, inflates the tx to at least this size
+        reference_script: { bytes: <u32> }   # optional, a CIP-33 reference script of that size
     template: { file: <path>.tx3, tx: <name>, args: { ... }, hash: <blake2b256> }  # optional (story 5)
     validity: { from: <slots>, until: <slots>, anchor: start | tip }  # optional, see below
     labels: [<string>, ...]
@@ -199,6 +200,45 @@ must exceed the transaction's natural size and stay under the network's
 `maxTxSize`. A transaction with no `cost` and a `pad_bytes` near `maxTxSize` is
 still a plain key spend — no script, no collateral — so it occupies a large
 share of the mempool's byte dimension at the ordinary min-fee per byte.
+
+**Reference scripts.** An output may carry `reference_script: { bytes: N }`, a
+CIP-33 reference script of exactly N bytes, as the ledger counts a script's size
+for its fee: its flat encoding inside a CBOR byte string. Materialise makes it the
+Plutus V3 program `(program 1.1.0 (delay … (con bytestring #…)))`, with the
+bytestring's length and the number of `delay`s chosen to come to N. The bytestring
+starts with a 32-byte hash of the IR hash, the seed and the output's name (`tx.N`),
+so each output carries its own script, unlike those of other runs, and a spec and seed
+always make the same ones; nothing ever runs them. A script
+under about 40 bytes holds only part of that hash, so two such scripts can coincide,
+and all those of 8 or 9 bytes do. N is at least 8 and at most 204 800, and 25, 258, 65 539 and
+65 540 are refused: the CBOR header lengthens at those points, so one more byte of
+script adds two or three to its size and no Plutus script has those sizes. The script must fit in the transaction that creates the
+output (under `maxTxSize`), and the output's minimum ADA covers it, so a `min`
+output with a 15 000-byte script holds about 65 ADA.
+
+A transaction that spends or reads outputs with reference scripts pays the ledger's
+reference-script fee on top of the size fee, over the scripts of every distinct
+output it spends or reads: `minFeeRefScriptCostPerByte` per byte for the first
+25 600 bytes, 1.2 times that for the next 25 600, and so on, rounded down once at the
+end. Conway allows a transaction at most 204 800 bytes of them. Dijkstra makes the
+tier size, the factor and that limit protocol parameters (`refScriptCostStride`,
+`refScriptCostMultiplier`, `maxRefScriptSizePerTx`); materialise reads them when the
+context gives them on Dijkstra, otherwise uses Conway's values (a Conway run ignores
+them, as its ledger does), and refuses a transaction past the limit, and one whose
+own scripts are larger than `maxTxSize`. `check`, which knows no protocol parameters, warns about one past
+Conway's, and about a transaction whose scripts, with its input, change, signature and
+metadata, would not fit in a 16 384-byte transaction (`maxTxSize` on mainnet and
+Musashi). Dijkstra may also charge for
+native assets in reference inputs (`refInputsCostPerMultiAssetPolicy`), which txflow
+does not build: on Dijkstra a run that reads an output holding assets is refused
+when the context gives that parameter above 0. Materialise needs, and
+records, `minFeeRefScriptCostPerByte` in the protocol parameters only when some
+output carries a script (the txs that read it pay that price, and so does the sweep of
+what the run leaves), so other runs keep their `run_id`. The graph does not change: reading a script is a reference input like any
+other. A sweep of outputs that carry scripts pays their fee too (one whose script it cannot
+pay for, without the price or past the limit, stays where it is), with only as many tiers
+of scripts per sweep transaction as cost less extra than a transaction of their own
+(two at Conway's prices). Offered funding UTxOs must not carry a reference script.
 
 **Validity windows.** `validity` says in which slots a transaction is valid, counted
 from an anchor rather than as absolute slots, so the spec means the same on every run.
@@ -352,6 +392,11 @@ pparams:                         # or `pparams_file: <path>` to a `cardano-cli q
   cost_models: { plutus_v3: [100788, 420, ...] }
   protocol_version: { major: 12, minor: 0 }
   max_value_size: 5000           # read only when a tx mints (maxValueSize)
+  min_fee_ref_script_cost_per_byte: 15   # read only when an output carries a reference script
+  # Dijkstra's tiers and limit; Conway's 25600, 1.2 and 204800 when left out.
+  ref_script_cost_stride: 25600
+  ref_script_cost_multiplier: 1.2
+  max_ref_script_size_per_tx: 204800
 slots:                           # optional: what validity windows count from (§2)
   start: <slot>                  #   the slot the schedule starts in
   tip: <slot>                    #   the slot of the tip block then (at most `start`)
@@ -489,6 +534,15 @@ Excerpt from the worked example against the demo context:
   ```
 
   `assets` counts the distinct assets each output holds, in output order.
+- When an output carries a reference script, its tx lists the script size of each
+  output (0 for none), and each tx that spends or reads scripts gives their bytes and
+  the part of its `fee` they cost; `min_fee_ref_script_cost_per_byte` is then in
+  `pparams` (and only then):
+
+  ```json
+  { "name": "p1", "reference_scripts": [15000, 0], "…": "…" }
+  { "name": "read1", "reference_scripts_read": { "bytes": 45000, "fee": 733200 }, "…": "…" }
+  ```
 
 ## 5. Schedule
 

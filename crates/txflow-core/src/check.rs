@@ -105,12 +105,21 @@ pub fn check_within(text: &str, limits: &Limits, network: Option<&Network>) -> R
                 }
                 warnings.extend(schedule::ordering(plan, &ir));
             }
+            // `expand` validated every reference, so this should not fail.
+            let reads = match crate::refscript::reads(&ir) {
+                Ok(reads) => reads,
+                Err(e) => {
+                    warnings.push(format!("reference scripts not checked: {e}"));
+                    Default::default()
+                }
+            };
+            warnings.extend(crate::refscript::warnings(&ir, &reads));
             warnings.extend(validity::warnings(
                 &ir,
                 plan.as_ref(),
                 network.and_then(|n| n.slots.as_ref()),
             ));
-            let summary = summarise(&spec, &ir, plan.as_ref());
+            let summary = summarise(&spec, &ir, plan.as_ref(), &reads);
             Report {
                 ok: true,
                 errors: vec![],
@@ -149,7 +158,12 @@ fn list(names: &[String]) -> String {
     }
 }
 
-fn summarise(spec: &ExperimentSpec, ir: &Ir, plan: Option<&Plan>) -> Summary {
+fn summarise(
+    spec: &ExperimentSpec,
+    ir: &Ir,
+    plan: Option<&Plan>,
+    reads: &BTreeMap<&String, u64>,
+) -> Summary {
     let funding_lovelace = ir
         .sources
         .values()
@@ -209,6 +223,7 @@ fn summarise(spec: &ExperimentSpec, ir: &Ir, plan: Option<&Plan>) -> Summary {
     describe_costs(ir, &mut description);
     describe_windows(ir, &mut description);
     describe_assets(ir, &mut description);
+    describe_reference_scripts(ir, reads, &mut description);
     if let Some(plan) = plan {
         describe_plan(plan, &mut description);
     }
@@ -395,6 +410,47 @@ fn describe_assets(ir: &Ir, description: &mut Vec<String>) {
             ));
         }
     }
+}
+
+/// How many outputs carry reference scripts, and the most one tx reads.
+fn describe_reference_scripts(
+    ir: &Ir,
+    reads: &BTreeMap<&String, u64>,
+    description: &mut Vec<String>,
+) {
+    let outputs = ir
+        .txs
+        .values()
+        .flat_map(|tx| tx.outputs.iter())
+        .filter(|o| o.reference_script.is_some())
+        .count();
+    if outputs == 0 {
+        return;
+    }
+    let mut text = format!(
+        "{outputs} output{} carr{} a reference script ({} bytes in all)",
+        plural(outputs),
+        if outputs == 1 { "ies" } else { "y" },
+        ir.txs
+            .values()
+            .map(crate::refscript::carried_by)
+            .sum::<u64>()
+    );
+    // The most read, the first by name among equals.
+    if let Some((name, most)) = reads
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+    {
+        text.push_str(&format!(
+            "; {} tx{} {} the reference-script fee for spending or reading them, `{name}` \
+             the most at {most} bytes",
+            reads.len(),
+            plural(reads.len()),
+            if reads.len() == 1 { "pays" } else { "pay" }
+        ));
+    }
+    text.push('.');
+    description.push(text);
 }
 
 /// One sentence per target, in the order targets are first used.
